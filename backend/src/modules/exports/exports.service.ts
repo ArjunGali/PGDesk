@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { StayStatus } from '@prisma/client';
+import { PaymentStatus, StayStatus } from '@prisma/client';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { dayStart, toDateOnlyString } from '../../common/utils/dates';
@@ -363,6 +363,222 @@ export class ExportsService {
     };
   }
 
+  /**
+   * Everything the property holds on one tenant, as a multi-sheet workbook.
+   *
+   * This is what leaves the app before their personal data is erased, so it
+   * has to be complete on its own: profile, stays, room history, bills with
+   * their lines, payments, deposits and E.B. shares.
+   */
+  async tenantArchiveXlsx(
+    tenantId: string,
+  ): Promise<{ buffer: Buffer; fileName: string }> {
+    // This is the copy that leaves the app before the data is erased, so it
+    // carries the full Aadhaar rather than the masked form shown on screen.
+    // The route behind it requires the export permission.
+    const tenant = await this.tenants.findOne(tenantId, { canSeeSensitive: true });
+    const orgName = await this.settings.getString(SETTING_KEYS.ORG_NAME);
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = orgName;
+    workbook.created = new Date();
+
+    const addSheet = (
+      name: string,
+      columns: Array<{ header: string; key: string; width: number }>,
+      rows: Array<Record<string, unknown>>,
+      moneyKeys: string[] = [],
+    ): void => {
+      const sheet = workbook.addWorksheet(name);
+      sheet.columns = columns;
+      sheet.getRow(1).font = { bold: true };
+      sheet.views = [{ state: 'frozen', ySplit: 1 }];
+      rows.forEach((row) => sheet.addRow(row));
+      moneyKeys.forEach((key) => {
+        sheet.getColumn(key).numFmt = '#,##0.00';
+      });
+    };
+
+    addSheet(
+      'Profile',
+      [
+        { header: 'Field', key: 'field', width: 26 },
+        { header: 'Value', key: 'value', width: 52 },
+      ],
+      [
+        { field: 'Full name', value: tenant.fullName },
+        { field: 'Mobile', value: tenant.mobile ?? '' },
+        { field: 'Emergency contact name', value: tenant.emergencyName ?? '' },
+        { field: 'Emergency contact', value: tenant.emergencyContact ?? '' },
+        { field: 'Permanent address', value: tenant.permanentAddress ?? '' },
+        { field: 'Office / college', value: tenant.officeName ?? '' },
+        { field: 'Office address', value: tenant.officeAddress ?? '' },
+        { field: 'Aadhaar number', value: tenant.aadhaarNumber ?? '' },
+        { field: 'Notes', value: tenant.notes ?? '' },
+        ...tenant.customFieldValues.map((v) => ({
+          field: v.definition.label,
+          value: v.value,
+        })),
+        { field: 'Exported on', value: toDateOnlyString(new Date()) },
+      ],
+    );
+
+    addSheet(
+      'Stays',
+      [
+        { header: 'Check-in', key: 'checkIn', width: 14 },
+        { header: 'Expected checkout', key: 'expected', width: 18 },
+        { header: 'Actual checkout', key: 'actual', width: 16 },
+        { header: 'Type', key: 'type', width: 12 },
+        { header: 'Status', key: 'status', width: 14 },
+        { header: 'Deposit agreed', key: 'deposit', width: 16 },
+      ],
+      tenant.stays.map((stay) => ({
+        checkIn: toDateOnlyString(stay.checkInDate),
+        expected: stay.expectedCheckoutDate
+          ? toDateOnlyString(stay.expectedCheckoutDate)
+          : '',
+        actual: stay.actualCheckoutDate
+          ? toDateOnlyString(stay.actualCheckoutDate)
+          : '',
+        type: stay.stayType,
+        status: stay.status,
+        deposit: Number(money(stay.depositAmount).toFixed(2)),
+      })),
+      ['deposit'],
+    );
+
+    addSheet(
+      'Room history',
+      [
+        { header: 'From', key: 'from', width: 14 },
+        { header: 'To', key: 'to', width: 14 },
+        { header: 'Branch', key: 'branch', width: 20 },
+        { header: 'Floor', key: 'floor', width: 16 },
+        { header: 'Room', key: 'room', width: 12 },
+        { header: 'Bed', key: 'bed', width: 8 },
+        { header: 'Reason', key: 'reason', width: 30 },
+      ],
+      tenant.stays.flatMap((stay) =>
+        stay.assignments.map((a) => ({
+          from: toDateOnlyString(a.startDate),
+          to: a.endDate ? toDateOnlyString(a.endDate) : 'Current',
+          branch: a.bed.room.floor.branch.name,
+          floor: a.bed.room.floor.name,
+          room: a.bed.room.name,
+          bed: a.bed.label,
+          reason: a.reason ?? '',
+        })),
+      ),
+    );
+
+    addSheet(
+      'Bills',
+      [
+        { header: 'Number', key: 'number', width: 20 },
+        { header: 'Period start', key: 'start', width: 14 },
+        { header: 'Period end', key: 'end', width: 14 },
+        { header: 'Charge', key: 'kind', width: 14 },
+        { header: 'Description', key: 'description', width: 42 },
+        { header: 'Amount', key: 'amount', width: 14 },
+        { header: 'Bill total', key: 'total', width: 14 },
+        { header: 'Paid', key: 'paid', width: 14 },
+        { header: 'Status', key: 'status', width: 16 },
+      ],
+      tenant.stays.flatMap((stay) =>
+        stay.invoices.flatMap((invoice) =>
+          invoice.lines.map((line) => ({
+            number: invoice.number,
+            start: toDateOnlyString(invoice.periodStart),
+            end: toDateOnlyString(invoice.periodEnd),
+            kind: line.kind,
+            description: line.description,
+            amount: Number(money(line.amount).toFixed(2)),
+            total: Number(money(invoice.totalAmount).toFixed(2)),
+            paid: Number(money(invoice.paidAmount).toFixed(2)),
+            status: invoice.status,
+          })),
+        ),
+      ),
+      ['amount', 'total', 'paid'],
+    );
+
+    addSheet(
+      'Payments',
+      [
+        { header: 'Receipt', key: 'receipt', width: 20 },
+        { header: 'Date', key: 'date', width: 14 },
+        { header: 'Method', key: 'method', width: 16 },
+        { header: 'Cash', key: 'cash', width: 12 },
+        { header: 'UPI', key: 'upi', width: 12 },
+        { header: 'Amount', key: 'amount', width: 14 },
+        { header: 'Status', key: 'status', width: 14 },
+        { header: 'Reference', key: 'reference', width: 22 },
+      ],
+      tenant.stays.flatMap((stay) =>
+        stay.payments.map((p) => ({
+          receipt: p.receiptNo,
+          date: toDateOnlyString(p.paidAt),
+          method: p.method,
+          cash: Number(money(p.cashAmount).toFixed(2)),
+          upi: Number(money(p.upiAmount).toFixed(2)),
+          amount: Number(money(p.amount).toFixed(2)),
+          status: p.reversedAt ? 'REVERSED' : p.status,
+          reference: p.reference ?? '',
+        })),
+      ),
+      ['cash', 'upi', 'amount'],
+    );
+
+    addSheet(
+      'Deposits',
+      [
+        { header: 'Date', key: 'date', width: 14 },
+        { header: 'Type', key: 'type', width: 24 },
+        { header: 'Amount', key: 'amount', width: 14 },
+        { header: 'Reason', key: 'reason', width: 40 },
+      ],
+      tenant.stays.flatMap((stay) =>
+        stay.depositLedger.map((entry) => ({
+          date: toDateOnlyString(entry.occurredAt),
+          type: entry.type,
+          amount: Number(money(entry.amount).toFixed(2)),
+          reason: entry.reason ?? '',
+        })),
+      ),
+      ['amount'],
+    );
+
+    addSheet(
+      'Electricity',
+      [
+        { header: 'Period start', key: 'start', width: 14 },
+        { header: 'Period end', key: 'end', width: 14 },
+        { header: 'Days', key: 'days', width: 10 },
+        { header: 'Units', key: 'units', width: 12 },
+        { header: 'Rate', key: 'rate', width: 12 },
+        { header: 'Amount', key: 'amount', width: 14 },
+      ],
+      tenant.stays.flatMap((stay) =>
+        stay.ebCharges.map((c) => ({
+          start: toDateOnlyString(c.cycle.periodStart),
+          end: toDateOnlyString(c.cycle.periodEnd),
+          days: c.occupiedDays,
+          units: Number(money(c.units).toFixed(2)),
+          rate: Number(money(c.cycle.ratePerUnit).toFixed(2)),
+          amount: Number(money(c.amount).toFixed(2)),
+        })),
+      ),
+      ['units', 'rate', 'amount'],
+    );
+
+    const buffer = (await workbook.xlsx.writeBuffer()) as unknown as Buffer;
+    return {
+      buffer: Buffer.from(buffer),
+      fileName: `${slug(tenant.fullName)}-full-record.xlsx`,
+    };
+  }
+
   // --- Spreadsheet and CSV ----------------------------------------------
 
   /** Tenant register as a real .xlsx workbook. */
@@ -462,6 +678,8 @@ export class ExportsService {
       this.prisma.payment.findMany({
         where: {
           paidAt: { gte: dayStart(from), lte: dayStart(to) },
+          // An accountant's collections sheet lists approved money only.
+          status: PaymentStatus.VERIFIED,
           ...(branchId
             ? {
                 stay: {

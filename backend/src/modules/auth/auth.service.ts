@@ -1,5 +1,8 @@
 import {
+  BadRequestException,
+  ForbiddenException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -8,6 +11,7 @@ import { UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { assertPinFormat } from '../../common/utils/pin';
 import { AuditService } from '../audit/audit.service';
 import { UsersService } from '../users/users.service';
 
@@ -16,6 +20,32 @@ export interface AuthTokens {
   refreshToken: string;
   expiresIn: string;
 }
+
+/** A profile as it appears on the "Who's using the app?" screen. */
+export interface ProfileSummary {
+  id: string;
+  fullName: string;
+  roleNames: string[];
+  isOwner: boolean;
+  avatarPath: string | null;
+  avatarColor: string | null;
+  /** False when the profile has never set a PIN; the app prompts to create one. */
+  hasPin: boolean;
+  /** Set while the profile is locked out after too many wrong PINs. */
+  lockedUntil: Date | null;
+}
+
+/**
+ * How many wrong PINs before a profile is held for a while.
+ *
+ * A 4-digit PIN has 10,000 combinations, which is nothing to a script but a
+ * lot to a person tapping a keypad. Throttling is what makes a short PIN
+ * acceptable at all, so the limit and the delay are deliberate and fixed
+ * rather than configurable — an owner should not be able to weaken it by
+ * accident.
+ */
+const MAX_PIN_ATTEMPTS = 5;
+const LOCKOUT_MINUTES = 5;
 
 @Injectable()
 export class AuthService {
@@ -27,33 +57,107 @@ export class AuthService {
     private readonly audit: AuditService,
   ) {}
 
-  async login(username: string, password: string, ip?: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { username: username.trim().toLowerCase() },
+  /**
+   * The first screen. Public, because there is nobody signed in yet — it
+   * deliberately exposes only what a profile picker needs, never a PIN hash,
+   * a permission list or a contact detail.
+   */
+  async listProfiles(): Promise<ProfileSummary[]> {
+    const users = await this.prisma.user.findMany({
+      where: { status: UserStatus.ACTIVE, showOnProfileScreen: true },
+      orderBy: [{ sortOrder: 'asc' }, { fullName: 'asc' }],
+      select: {
+        id: true,
+        fullName: true,
+        isOwner: true,
+        avatarPath: true,
+        avatarColor: true,
+        pinHash: true,
+        lockedUntil: true,
+        roles: { select: { role: { select: { name: true } } } },
+      },
     });
 
-    // Same message and comparable timing whether the user exists or not.
-    const hash = user?.passwordHash ?? (await bcrypt.hash('unused', 10));
-    const ok = await bcrypt.compare(password, hash);
+    const now = new Date();
+    return users.map((user) => ({
+      id: user.id,
+      fullName: user.fullName,
+      roleNames: user.roles.map((r) => r.role.name),
+      isOwner: user.isOwner,
+      avatarPath: user.avatarPath,
+      avatarColor: user.avatarColor,
+      hasPin: user.pinHash !== null,
+      lockedUntil:
+        user.lockedUntil && user.lockedUntil > now ? user.lockedUntil : null,
+    }));
+  }
 
-    if (!user || !ok || user.status !== UserStatus.ACTIVE) {
+  /**
+   * Unlocks a profile with its app PIN.
+   *
+   * This is app-level authentication: no device biometrics, no Android
+   * fingerprint API. The PIN is verified here, on the server, so a tampered
+   * client cannot simply skip the screen — the tokens only come from a correct
+   * PIN.
+   */
+  async unlockProfile(userId: string, pin: string, ip?: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException('That profile is not available');
+    }
+
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      const seconds = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 1000);
+      throw new ForbiddenException(
+        `Too many incorrect attempts. Try again in ${formatWait(seconds)}.`,
+      );
+    }
+
+    if (!user.pinHash) {
+      throw new BadRequestException(
+        'This profile has no PIN yet. Ask the owner to set one.',
+      );
+    }
+
+    const ok = await bcrypt.compare(pin, user.pinHash);
+    if (!ok) {
+      const attempts = user.failedPinAttempts + 1;
+      const locked = attempts >= MAX_PIN_ATTEMPTS;
+
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          failedPinAttempts: locked ? 0 : attempts,
+          lockedUntil: locked
+            ? new Date(Date.now() + LOCKOUT_MINUTES * 60_000)
+            : null,
+        },
+      });
       await this.audit.record({
-        actorId: user?.id,
-        action: 'auth.login_failed',
+        actorId: user.id,
+        action: 'auth.pin_failed',
         entityType: 'User',
-        entityId: user?.id,
+        entityId: user.id,
+        after: { attempts, lockedOut: locked },
         ipAddress: ip,
       });
-      throw new UnauthorizedException('Incorrect username or password');
+
+      throw new UnauthorizedException(
+        locked
+          ? `Incorrect PIN. This profile is locked for ${LOCKOUT_MINUTES} minutes.`
+          : `Incorrect PIN. ${MAX_PIN_ATTEMPTS - attempts} attempt${
+              MAX_PIN_ATTEMPTS - attempts === 1 ? '' : 's'
+            } left.`,
+      );
     }
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { lastLoginAt: new Date() },
+      data: { failedPinAttempts: 0, lockedUntil: null, lastLoginAt: new Date() },
     });
     await this.audit.record({
       actorId: user.id,
-      action: 'auth.login',
+      action: 'auth.unlock',
       entityType: 'User',
       entityId: user.id,
       ipAddress: ip,
@@ -62,6 +166,94 @@ export class AuthService {
     const tokens = await this.issueTokens(user.id, user.username);
     const profile = await this.users.findAuthenticated(user.id);
     return { ...tokens, user: profile };
+  }
+
+  /** Sets a PIN on a profile that has none — the first-run path. */
+  async setInitialPin(userId: string, pin: string) {
+    assertPinFormat(pin);
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      throw new NotFoundException('Profile not found');
+    }
+    if (user.pinHash) {
+      throw new BadRequestException(
+        'This profile already has a PIN. Change it from Settings instead.',
+      );
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { pinHash: await bcrypt.hash(pin, 10), failedPinAttempts: 0 },
+    });
+    await this.audit.record({
+      actorId: userId,
+      action: 'auth.pin_set',
+      entityType: 'User',
+      entityId: userId,
+    });
+
+    return this.unlockProfile(userId, pin);
+  }
+
+  /** Changes your own PIN; the current one is required. */
+  async changePin(userId: string, currentPin: string, newPin: string) {
+    assertPinFormat(newPin);
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+
+    if (user.pinHash && !(await bcrypt.compare(currentPin, user.pinHash))) {
+      throw new UnauthorizedException('Your current PIN is incorrect');
+    }
+    if (user.pinHash && (await bcrypt.compare(newPin, user.pinHash))) {
+      throw new BadRequestException('The new PIN must be different');
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { pinHash: await bcrypt.hash(newPin, 10), failedPinAttempts: 0, lockedUntil: null },
+    });
+    // Changing a PIN signs the profile out everywhere else.
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    await this.audit.record({
+      actorId: userId,
+      action: 'auth.pin_changed',
+      entityType: 'User',
+      entityId: userId,
+    });
+    return { ok: true };
+  }
+
+  /**
+   * Resets another profile's PIN. Restricted to the manage-profiles permission
+   * at the controller, because it hands someone else's access away.
+   */
+  async resetPin(targetUserId: string, newPin: string, actorId: string) {
+    assertPinFormat(newPin);
+    const target = await this.prisma.user.findUnique({ where: { id: targetUserId } });
+    if (!target) throw new NotFoundException('Profile not found');
+
+    await this.prisma.user.update({
+      where: { id: targetUserId },
+      data: {
+        pinHash: await bcrypt.hash(newPin, 10),
+        failedPinAttempts: 0,
+        lockedUntil: null,
+      },
+    });
+    await this.prisma.refreshToken.updateMany({
+      where: { userId: targetUserId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    await this.audit.record({
+      actorId,
+      action: 'auth.pin_reset',
+      entityType: 'User',
+      entityId: targetUserId,
+      reason: 'PIN reset by an administrator',
+    });
+    return { ok: true };
   }
 
   async refresh(refreshToken: string) {
@@ -76,7 +268,7 @@ export class AuthService {
       stored.expiresAt < new Date() ||
       stored.user.status !== UserStatus.ACTIVE
     ) {
-      throw new UnauthorizedException('Please sign in again');
+      throw new UnauthorizedException('Please choose your profile again');
     }
 
     // Rotate: the presented token is spent the moment it is used.
@@ -106,34 +298,6 @@ export class AuthService {
     }
   }
 
-  async changePassword(
-    userId: string,
-    currentPassword: string,
-    newPassword: string,
-  ): Promise<void> {
-    const user = await this.prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-    });
-    const ok = await bcrypt.compare(currentPassword, user.passwordHash);
-    if (!ok) throw new UnauthorizedException('Current password is incorrect');
-
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { passwordHash: await bcrypt.hash(newPassword, 12) },
-    });
-    // Signing out other devices is the point of a password change.
-    await this.prisma.refreshToken.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
-    await this.audit.record({
-      actorId: userId,
-      action: 'auth.password_changed',
-      entityType: 'User',
-      entityId: userId,
-    });
-  }
-
   private async issueTokens(
     userId: string,
     username: string,
@@ -141,10 +305,7 @@ export class AuthService {
     const expiresIn = this.config.get<string>('JWT_EXPIRES_IN', '12h');
     const accessToken = await this.jwt.signAsync(
       { sub: userId, username },
-      {
-        secret: this.config.getOrThrow<string>('JWT_SECRET'),
-        expiresIn,
-      },
+      { secret: this.config.getOrThrow<string>('JWT_SECRET'), expiresIn },
     );
 
     const refreshToken = randomBytes(48).toString('hex');
@@ -171,4 +332,10 @@ function hashToken(token: string): string {
 function parseDays(value: string): number {
   const match = /^(\d+)\s*d$/i.exec(value.trim());
   return match ? Number(match[1]) : 30;
+}
+
+function formatWait(seconds: number): string {
+  if (seconds < 60) return `${seconds} seconds`;
+  const minutes = Math.ceil(seconds / 60);
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 }

@@ -11,7 +11,8 @@ import { BranchesScreen } from './screens/BranchesScreen';
 import { EbScreen } from './screens/EbScreen';
 import { ExpensesScreen } from './screens/ExpensesScreen';
 import { HomeScreen } from './screens/HomeScreen';
-import { LoginScreen } from './screens/LoginScreen';
+import { ProfileSelectScreen } from './screens/ProfileSelectScreen';
+import { PastTenantsScreen } from './screens/PastTenantsScreen';
 import { PaymentsScreen } from './screens/PaymentsScreen';
 import { ReportsScreen } from './screens/ReportsScreen';
 import { RoomDetailScreen } from './screens/RoomDetailScreen';
@@ -43,7 +44,8 @@ export function App() {
   return (
     /* Hash routing: a file:// WebView has no server to resolve deep paths. */
     <HashRouter>
-      {status === 'authenticated' ? <AuthenticatedRoutes /> : <LoginScreen />}
+      {/* No login page: the app opens on profile selection, then a PIN. */}
+      {status === 'authenticated' ? <AuthenticatedRoutes /> : <ProfileSelectScreen />}
     </HashRouter>
   );
 }
@@ -62,6 +64,7 @@ function AuthenticatedRoutes() {
           <Route path="/payments" element={<PaymentsScreen />} />
           <Route path="/tenants" element={<TenantsScreen />} />
           <Route path="/tenants/:tenantId" element={<TenantDetailScreen />} />
+          <Route path="/past-tenants" element={<PastTenantsScreen />} />
           <Route path="/eb" element={<EbScreen />} />
           <Route path="/expenses" element={<ExpensesScreen />} />
           <Route path="/reports" element={<ReportsScreen />} />

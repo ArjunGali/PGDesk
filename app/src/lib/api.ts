@@ -169,15 +169,17 @@ export async function apiRequest<T>(
     );
   }
 
-  // An expired access token is recoverable; try once, silently.
-  if (response.status === 401 && !options.skipRefresh) {
+  // A 401 from an authentication attempt is a wrong PIN, not an expired
+  // session: refreshing would be pointless and bouncing the user back to the
+  // profile list would hide the message telling them what went wrong.
+  if (response.status === 401 && !isAuthAttempt(path) && !options.skipRefresh) {
     const refreshed = await refreshSession();
     if (refreshed) {
       return apiRequest<T>(path, { ...options, skipRefresh: true });
     }
     await saveTokens(null, null);
     onUnauthenticated?.();
-    throw new ApiError('Your session has ended. Please sign in again.', 401);
+    throw new ApiError('Your session has ended. Please choose your profile again.', 401);
   }
 
   if (response.status === 204) return undefined as T;
@@ -189,6 +191,19 @@ export async function apiRequest<T>(
     throw new ApiError(extractMessage(data, response.status), response.status, data);
   }
   return data as T;
+}
+
+/**
+ * Endpoints that establish a session rather than consume one. Their failures
+ * belong to the screen that called them.
+ */
+function isAuthAttempt(path: string): boolean {
+  return (
+    path.startsWith('/auth/unlock') ||
+    path.startsWith('/auth/set-pin') ||
+    path.startsWith('/auth/refresh') ||
+    path.startsWith('/auth/change-pin')
+  );
 }
 
 function safeParse(text: string): unknown {
@@ -254,7 +269,7 @@ export async function fetchBlob(
   if (!response.ok) {
     throw new ApiError(
       response.status === 401
-        ? 'Your session has ended. Please sign in again.'
+        ? 'Your session has ended. Please choose your profile again.'
         : 'That file could not be produced.',
       response.status,
     );

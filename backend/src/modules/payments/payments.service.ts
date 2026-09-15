@@ -8,11 +8,12 @@ import {
   DepositStatus,
   InvoiceStatus,
   PaymentMethod,
+  PaymentStatus,
 } from '@prisma/client';
 import Decimal from 'decimal.js';
 import { Db, PrismaService } from '../../common/prisma/prisma.service';
 import { dayStart } from '../../common/utils/dates';
-import { money, sum, toDb } from '../../common/utils/money';
+import { formatINR, money, sum, toDb } from '../../common/utils/money';
 import { AuditService } from '../audit/audit.service';
 import { SETTING_KEYS } from '../settings/setting-keys';
 import { SettingsService } from '../settings/settings.service';
@@ -28,11 +29,16 @@ export interface RecordPaymentInput {
   stayId: string;
   amount: string;
   method?: PaymentMethod;
+  /** Required for CASH_AND_UPI; the two must add up to `amount`. */
+  cashAmount?: string;
+  upiAmount?: string;
   paidAt: string;
   reference?: string;
   notes?: string;
   /** Apply to these bills in order; otherwise oldest bills are paid first. */
   invoiceIds?: string[];
+  /** Records an identical payment that would otherwise look like a duplicate. */
+  allowDuplicate?: boolean;
 }
 
 @Injectable()
@@ -44,18 +50,34 @@ export class PaymentsService {
   ) {}
 
   /**
-   * Records money received and applies it to bills.
+   * Records money received.
    *
-   * Allocation is explicit: every rupee lands on a specific bill, so a
-   * tenant's balance is always derivable from records rather than from a
-   * mutable running total. Anything left over after all bills are cleared is
-   * held as an advance and applied to the next bill.
+   * The money is only applied to bills once the payment is VERIFIED. Someone
+   * who can approve payments has their own entries approved on the spot;
+   * everyone else's wait, so a staff member cannot clear a tenant's balance
+   * without a second pair of eyes.
    */
-  async record(input: RecordPaymentInput, actorId: string) {
+  async record(
+    input: RecordPaymentInput,
+    actorId: string,
+    options: { canApprove: boolean },
+  ) {
     const amount = money(input.amount);
     if (amount.lessThanOrEqualTo(0)) {
       throw new BadRequestException('Payment amount must be more than zero');
     }
+
+    const paidAt = dayStart(input.paidAt);
+    // Backdating is normal — money often gets entered days later. Forward
+    // dating is not: it would make a bill look settled before it was.
+    if (paidAt > dayStart(new Date())) {
+      throw new BadRequestException(
+        'A payment cannot be dated in the future. Record it on the day it was received.',
+      );
+    }
+
+    const method = input.method ?? PaymentMethod.CASH;
+    const { cashAmount, upiAmount } = this.resolveSplit(method, amount, input);
 
     return this.prisma.runInTransaction(async (tx) => {
       const stay = await tx.stay.findUnique({
@@ -64,86 +86,286 @@ export class PaymentsService {
       });
       if (!stay) throw new NotFoundException('Stay not found');
 
+      await this.assertNotDuplicate(tx, input, amount, paidAt);
+
+      const requireVerification = await this.settings.getBoolean(
+        SETTING_KEYS.PAYMENT_REQUIRE_VERIFICATION,
+      );
+      const verified = options.canApprove || !requireVerification;
+
       const receiptNo = await this.nextReceiptNumber(tx);
       const payment = await tx.payment.create({
         data: {
           receiptNo,
           stayId: input.stayId,
           amount: toDb(amount),
-          method: input.method ?? PaymentMethod.CASH,
-          paidAt: dayStart(input.paidAt),
+          cashAmount: toDb(cashAmount),
+          upiAmount: toDb(upiAmount),
+          method,
+          status: verified ? PaymentStatus.VERIFIED : PaymentStatus.SUBMITTED,
+          verifiedById: verified ? actorId : null,
+          verifiedAt: verified ? new Date() : null,
+          paidAt,
           reference: input.reference,
           notes: input.notes,
           receivedById: actorId,
         },
       });
 
-      const targets = input.invoiceIds?.length
-        ? await tx.invoice.findMany({
-            where: { id: { in: input.invoiceIds }, stayId: input.stayId },
-            orderBy: { periodStart: 'asc' },
-          })
-        : await tx.invoice.findMany({
-            where: {
-              stayId: input.stayId,
-              status: { in: [InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID] },
-            },
-            orderBy: [{ dueDate: 'asc' }, { periodStart: 'asc' }],
-          });
-
-      let remaining = amount;
-      const allocations: Array<{ invoiceId: string; number: string; amount: string }> = [];
-
-      for (const invoice of targets) {
-        if (remaining.lessThanOrEqualTo(0)) break;
-        const due = money(invoice.totalAmount).minus(money(invoice.paidAmount));
-        if (due.lessThanOrEqualTo(0)) continue;
-
-        const applied = Decimal.min(due, remaining);
-        await tx.paymentAllocation.create({
-          data: { paymentId: payment.id, invoiceId: invoice.id, amount: toDb(applied) },
-        });
-
-        const newPaid = money(invoice.paidAmount).plus(applied);
-        await tx.invoice.update({
-          where: { id: invoice.id },
-          data: {
-            paidAmount: toDb(newPaid),
-            status: newPaid.greaterThanOrEqualTo(money(invoice.totalAmount))
-              ? InvoiceStatus.PAID
-              : InvoiceStatus.PARTIALLY_PAID,
-          },
-        });
-
-        allocations.push({
-          invoiceId: invoice.id,
-          number: invoice.number,
-          amount: applied.toFixed(2),
-        });
-        remaining = remaining.minus(applied);
-      }
+      const allocations = verified
+        ? await this.allocate(tx, payment.id, input.stayId, amount, input.invoiceIds)
+        : { applied: [], remaining: amount };
 
       await this.audit.record({
         tx,
         actorId,
-        action: 'payment.record',
+        action: verified ? 'payment.record_verified' : 'payment.record_submitted',
         entityType: 'Payment',
         entityId: payment.id,
         after: {
           receiptNo,
           amount: amount.toFixed(2),
-          allocations,
-          unallocated: remaining.toFixed(2),
+          method,
+          cashAmount: cashAmount.toFixed(2),
+          upiAmount: upiAmount.toFixed(2),
+          status: payment.status,
+          allocations: allocations.applied,
+          unallocated: allocations.remaining.toFixed(2),
         },
       });
 
       return {
         payment,
-        allocations,
-        unallocated: remaining.toFixed(2),
+        allocations: allocations.applied,
+        unallocated: allocations.remaining.toFixed(2),
         tenantName: stay.tenant.fullName,
+        awaitingApproval: !verified,
       };
     });
+  }
+
+  /**
+   * Approves collected money, which is the point at which it reaches the
+   * ledger. Allocation happens here rather than at recording time.
+   */
+  async verify(paymentId: string, actorId: string, invoiceIds?: string[]) {
+    return this.prisma.runInTransaction(async (tx) => {
+      const payment = await tx.payment.findUnique({ where: { id: paymentId } });
+      if (!payment) throw new NotFoundException('Payment not found');
+      if (payment.status === PaymentStatus.VERIFIED) {
+        throw new BadRequestException('This payment has already been approved');
+      }
+      if (payment.status === PaymentStatus.REJECTED) {
+        throw new BadRequestException(
+          'This payment was rejected. Record a new one instead of approving it.',
+        );
+      }
+
+      const amount = money(payment.amount);
+      const allocations = await this.allocate(
+        tx,
+        payment.id,
+        payment.stayId,
+        amount,
+        invoiceIds,
+      );
+
+      const updated = await tx.payment.update({
+        where: { id: paymentId },
+        data: {
+          status: PaymentStatus.VERIFIED,
+          verifiedById: actorId,
+          verifiedAt: new Date(),
+        },
+      });
+
+      await this.audit.record({
+        tx,
+        actorId,
+        action: 'payment.verify',
+        entityType: 'Payment',
+        entityId: paymentId,
+        before: { status: payment.status },
+        after: {
+          status: PaymentStatus.VERIFIED,
+          allocations: allocations.applied,
+          unallocated: allocations.remaining.toFixed(2),
+        },
+      });
+
+      return { payment: updated, ...allocations };
+    });
+  }
+
+  /** Rejects collected money with a mandatory reason. Nothing is allocated. */
+  async reject(paymentId: string, reason: string, actorId: string) {
+    if (!reason?.trim()) {
+      throw new BadRequestException('A reason is required to reject a payment');
+    }
+    return this.prisma.runInTransaction(async (tx) => {
+      const payment = await tx.payment.findUnique({ where: { id: paymentId } });
+      if (!payment) throw new NotFoundException('Payment not found');
+      if (payment.status === PaymentStatus.VERIFIED) {
+        throw new BadRequestException(
+          'This payment has been approved. Reverse it instead of rejecting it.',
+        );
+      }
+
+      const updated = await tx.payment.update({
+        where: { id: paymentId },
+        data: {
+          status: PaymentStatus.REJECTED,
+          rejectionReason: reason,
+          verifiedById: actorId,
+          verifiedAt: new Date(),
+        },
+      });
+
+      await this.audit.record({
+        tx,
+        actorId,
+        action: 'payment.reject',
+        entityType: 'Payment',
+        entityId: paymentId,
+        before: { status: payment.status },
+        after: { status: PaymentStatus.REJECTED },
+        reason,
+      });
+      return updated;
+    });
+  }
+
+  /**
+   * Applies money to bills, oldest due first, and returns what stuck.
+   * Anything left over after every bill is clear is held as an advance.
+   */
+  private async allocate(
+    tx: Db,
+    paymentId: string,
+    stayId: string,
+    amount: Decimal,
+    invoiceIds?: string[],
+  ): Promise<{
+    applied: Array<{ invoiceId: string; number: string; amount: string }>;
+    remaining: Decimal;
+  }> {
+    const targets = invoiceIds?.length
+      ? await tx.invoice.findMany({
+          where: { id: { in: invoiceIds }, stayId },
+          orderBy: { periodStart: 'asc' },
+        })
+      : await tx.invoice.findMany({
+          where: {
+            stayId,
+            status: { in: [InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID] },
+          },
+          orderBy: [{ dueDate: 'asc' }, { periodStart: 'asc' }],
+        });
+
+    let remaining = amount;
+    const applied: Array<{ invoiceId: string; number: string; amount: string }> = [];
+
+    for (const invoice of targets) {
+      if (remaining.lessThanOrEqualTo(0)) break;
+      const due = money(invoice.totalAmount).minus(money(invoice.paidAmount));
+      if (due.lessThanOrEqualTo(0)) continue;
+
+      const applying = Decimal.min(due, remaining);
+      await tx.paymentAllocation.create({
+        data: { paymentId, invoiceId: invoice.id, amount: toDb(applying) },
+      });
+
+      const newPaid = money(invoice.paidAmount).plus(applying);
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          paidAmount: toDb(newPaid),
+          status: newPaid.greaterThanOrEqualTo(money(invoice.totalAmount))
+            ? InvoiceStatus.PAID
+            : InvoiceStatus.PARTIALLY_PAID,
+        },
+      });
+
+      applied.push({
+        invoiceId: invoice.id,
+        number: invoice.number,
+        amount: applying.toFixed(2),
+      });
+      remaining = remaining.minus(applying);
+    }
+
+    return { applied, remaining };
+  }
+
+  /** Splits a payment across cash and UPI, and checks the parts add up. */
+  private resolveSplit(
+    method: PaymentMethod,
+    amount: Decimal,
+    input: RecordPaymentInput,
+  ): { cashAmount: Decimal; upiAmount: Decimal } {
+    if (method === PaymentMethod.CASH_AND_UPI) {
+      const cashAmount = money(input.cashAmount ?? 0);
+      const upiAmount = money(input.upiAmount ?? 0);
+      if (cashAmount.lessThan(0) || upiAmount.lessThan(0)) {
+        throw new BadRequestException('Cash and UPI amounts cannot be negative');
+      }
+      if (!cashAmount.plus(upiAmount).equals(amount)) {
+        throw new BadRequestException(
+          `The cash (${formatINR(cashAmount)}) and UPI (${formatINR(
+            upiAmount,
+          )}) amounts add up to ${formatINR(
+            cashAmount.plus(upiAmount),
+          )}, but the total is ${formatINR(amount)}.`,
+        );
+      }
+      return { cashAmount, upiAmount };
+    }
+    if (method === PaymentMethod.UPI) {
+      return { cashAmount: new Decimal(0), upiAmount: amount };
+    }
+    if (method === PaymentMethod.CASH) {
+      return { cashAmount: amount, upiAmount: new Decimal(0) };
+    }
+    return { cashAmount: new Decimal(0), upiAmount: new Decimal(0) };
+  }
+
+  /**
+   * Catches the same payment being entered twice — a genuinely common mistake
+   * when two people are collecting rent on the same evening.
+   */
+  private async assertNotDuplicate(
+    tx: Db,
+    input: RecordPaymentInput,
+    amount: Decimal,
+    paidAt: Date,
+  ): Promise<void> {
+    if (input.allowDuplicate) return;
+
+    const windowMinutes = await this.settings.getInt(
+      SETTING_KEYS.PAYMENT_DUPLICATE_WINDOW_MINUTES,
+    );
+    if (windowMinutes <= 0) return;
+
+    const since = new Date(Date.now() - windowMinutes * 60_000);
+    const existing = await tx.payment.findFirst({
+      where: {
+        stayId: input.stayId,
+        amount: toDb(amount),
+        paidAt,
+        createdAt: { gte: since },
+        status: { not: PaymentStatus.REJECTED },
+        reversedAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existing) {
+      throw new BadRequestException(
+        `${formatINR(amount)} was already recorded for this tenant on the same date a few minutes ago (${
+          existing.receiptNo
+        }). If this is a second, separate payment, confirm it to record it anyway.`,
+      );
+    }
   }
 
   /**
@@ -163,6 +385,11 @@ export class PaymentsService {
       if (!payment) throw new NotFoundException('Payment not found');
       if (payment.reversedAt) {
         throw new BadRequestException('This payment has already been reversed');
+      }
+      if (payment.status !== PaymentStatus.VERIFIED) {
+        throw new BadRequestException(
+          'Only an approved payment can be reversed. Reject it instead.',
+        );
       }
 
       for (const allocation of payment.allocations) {
@@ -195,6 +422,9 @@ export class PaymentsService {
           reference: payment.reference,
           notes: `Reversal of ${payment.receiptNo}: ${reason}`,
           reversalOfId: payment.id,
+          status: PaymentStatus.VERIFIED,
+          verifiedById: actorId,
+          verifiedAt: new Date(),
           receivedById: actorId,
         },
       });
@@ -218,6 +448,7 @@ export class PaymentsService {
     stayId?: string;
     tenantId?: string;
     branchId?: string;
+    status?: PaymentStatus[];
     from?: Date;
     to?: Date;
     page?: number;
@@ -228,6 +459,7 @@ export class PaymentsService {
 
     const where = {
       stayId: filter.stayId,
+      status: filter.status ? { in: filter.status } : undefined,
       paidAt: filter.from || filter.to ? { gte: filter.from, lte: filter.to } : undefined,
       stay: {
         tenantId: filter.tenantId,
@@ -391,6 +623,56 @@ export class PaymentsService {
 
       return entry;
     });
+  }
+
+  /** Money collected but not yet approved — the approve queue. */
+  async awaitingApproval(branchId?: string) {
+    const items = await this.prisma.payment.findMany({
+      where: {
+        status: { in: [PaymentStatus.PENDING, PaymentStatus.SUBMITTED] },
+        stay: branchId
+          ? {
+              assignments: {
+                some: { bed: { room: { floor: { branchId } } } },
+              },
+            }
+          : undefined,
+      },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        stay: {
+          include: {
+            tenant: { select: { id: true, fullName: true } },
+            assignments: {
+              where: { endDate: null },
+              take: 1,
+              include: { bed: { include: { room: true } } },
+            },
+          },
+        },
+      },
+    });
+
+    return {
+      count: items.length,
+      totalAmount: sum(items.map((p) => p.amount)).toFixed(2),
+      items: items.map((p) => ({
+        id: p.id,
+        receiptNo: p.receiptNo,
+        stayId: p.stayId,
+        tenantId: p.stay.tenantId,
+        tenantName: p.stay.tenant.fullName,
+        roomName: p.stay.assignments[0]?.bed.room.name ?? null,
+        amount: money(p.amount).toFixed(2),
+        cashAmount: money(p.cashAmount).toFixed(2),
+        upiAmount: money(p.upiAmount).toFixed(2),
+        method: p.method,
+        status: p.status,
+        paidAt: p.paidAt,
+        reference: p.reference,
+        recordedAt: p.createdAt,
+      })),
+    };
   }
 
   private async nextReceiptNumber(tx: Db): Promise<string> {

@@ -169,6 +169,8 @@ export class EbService {
         periodDays: inclusiveDays(periodStart, periodEnd),
         maxPlausibleUnitsPerDay: maxUnits,
         splitMethod: splitMethod as EbSplitMethod,
+        // ROOM_CAPACITY needs the sharing size to know what one bed's share is.
+        roomCapacity: meter.room?.capacity ?? null,
         occupants: occupants.map((o) => ({
           stayId: o.stayId,
           occupiedDays: o.occupiedDays,
@@ -182,6 +184,7 @@ export class EbService {
           id: meter.id,
           name: meter.name,
           roomName: meter.room?.name ?? null,
+          roomCapacity: meter.room?.capacity ?? null,
           branchName: meter.room?.floor.branch.name ?? null,
         },
         periodStart,

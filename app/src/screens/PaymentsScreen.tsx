@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { WalletIcon } from '@/components/Icons';
+import { CheckIcon, WalletIcon } from '@/components/Icons';
 import {
   Card,
   Chip,
@@ -41,11 +41,35 @@ interface PendingResponse {
   items: PendingItem[];
 }
 
+interface AwaitingPayment {
+  id: string;
+  receiptNo: string;
+  stayId: string;
+  tenantId: string;
+  tenantName: string;
+  roomName: string | null;
+  amount: string;
+  cashAmount: string;
+  upiAmount: string;
+  method: string;
+  status: string;
+  paidAt: string;
+  reference: string | null;
+  recordedAt: string;
+}
+
+interface AwaitingResponse {
+  count: number;
+  totalAmount: string;
+  items: AwaitingPayment[];
+}
+
 interface PaymentRow {
   id: string;
   receiptNo: string;
   amount: string;
   method: string;
+  status: string;
   paidAt: string;
   reversedAt: string | null;
   stay: { tenant: { id: string; fullName: string } };
@@ -57,7 +81,7 @@ export function PaymentsScreen() {
   const can = useAuthStore((s) => s.can);
   const branchFilter = useUiStore((s) => s.branchFilter);
   const setBranchFilter = useUiStore((s) => s.setBranchFilter);
-  const [tab, setTab] = useState<'pending' | 'received'>('pending');
+  const [tab, setTab] = useState<'pending' | 'approve' | 'received'>('pending');
   const [collectFrom, setCollectFrom] = useState<PendingItem | null>(null);
 
   const { data: branches } = useQuery({
@@ -72,6 +96,18 @@ export function PaymentsScreen() {
         branchId: branchFilter ?? undefined,
       }),
     enabled: tab === 'pending',
+  });
+
+  // The approve queue is fetched regardless of the active tab so its count can
+  // sit on the tab itself — money waiting on someone is worth surfacing.
+  const approval = useQuery({
+    queryKey: ['payments', 'awaiting', branchFilter],
+    queryFn: () =>
+      api.get<AwaitingResponse>('/payments/awaiting-approval', {
+        branchId: branchFilter ?? undefined,
+      }),
+    enabled: can('payment.view'),
+    refetchInterval: 120_000,
   });
 
   const received = useQuery({
@@ -98,17 +134,28 @@ export function PaymentsScreen() {
       />
 
       <div className="flex flex-col sm:flex-row gap-3 mb-5">
-        <div className="flex gap-1 border border-line rounded-lg p-1 bg-surface-sunken">
-          {(['pending', 'received'] as const).map((key) => (
+        <div className="flex gap-1 border border-line rounded-lg p-1 bg-surface-sunken overflow-x-auto">
+          {(
+            [
+              ['pending', 'Pending'],
+              ['approve', 'To approve'],
+              ['received', 'Received'],
+            ] as const
+          ).map(([key, label]) => (
             <button
               key={key}
               type="button"
               onClick={() => setTab(key)}
-              className={`px-4 h-10 rounded-md text-sm font-medium transition-colors ${
+              className={`px-4 h-10 rounded-md text-sm font-medium whitespace-nowrap transition-colors ${
                 tab === key ? 'bg-surface-raised text-ink' : 'text-ink-muted'
               }`}
             >
-              {key === 'pending' ? 'Pending' : 'Received'}
+              {label}
+              {key === 'approve' && (approval.data?.count ?? 0) > 0 && (
+                <span className="ml-1.5 text-xs text-caution tabular">
+                  {approval.data?.count}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -189,6 +236,16 @@ export function PaymentsScreen() {
         </>
       )}
 
+      {tab === 'approve' && (
+        <ApprovalQueue
+          data={approval.data}
+          isLoading={approval.isLoading}
+          error={approval.error}
+          onRetry={() => approval.refetch()}
+          canApprove={can('payment.approve')}
+        />
+      )}
+
       {tab === 'received' && (
         <>
           {received.isLoading && <LoadingRows rows={3} />}
@@ -217,13 +274,26 @@ export function PaymentsScreen() {
                           ` · ${payment.allocations.map((a) => a.invoice.number).join(', ')}`}
                       </p>
                     </div>
-                    <span
-                      className={`tabular font-semibold shrink-0 ${
-                        payment.reversedAt ? 'line-through text-ink-faint' : 'text-positive'
-                      }`}
-                    >
-                      {formatMoney(payment.amount)}
-                    </span>
+                    <div className="text-right shrink-0">
+                      <span
+                        className={`tabular font-semibold block ${
+                          payment.reversedAt
+                            ? 'line-through text-ink-faint'
+                            : payment.status === 'VERIFIED'
+                              ? 'text-positive'
+                              : payment.status === 'REJECTED'
+                                ? 'text-critical'
+                                : 'text-caution'
+                        }`}
+                      >
+                        {formatMoney(payment.amount)}
+                      </span>
+                      {payment.status !== 'VERIFIED' && (
+                        <span className="text-[11px] text-ink-muted">
+                          {payment.status.toLowerCase()}
+                        </span>
+                      )}
+                    </div>
                   </button>
                 ))}
               </Card>
@@ -357,5 +427,169 @@ function CollectSheet({
         </>
       )}
     </Sheet>
+  );
+}
+
+/**
+ * Money staff have collected but nobody has approved yet.
+ *
+ * Until a payment is approved it is not applied to any bill, so this queue is
+ * the gap between "the tenant handed over cash" and "the ledger agrees".
+ */
+function ApprovalQueue({
+  data,
+  isLoading,
+  error,
+  onRetry,
+  canApprove,
+}: {
+  data: AwaitingResponse | undefined;
+  isLoading: boolean;
+  error: unknown;
+  onRetry: () => void;
+  canApprove: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const toast = useUiStore((s) => s.toast);
+  const navigate = useNavigate();
+  const [rejecting, setRejecting] = useState<AwaitingPayment | null>(null);
+  const [reason, setReason] = useState('');
+
+  const approve = useMutation({
+    mutationFn: (id: string) => api.post(`/payments/${id}/verify`, {}),
+    onSuccess: () => {
+      void queryClient.invalidateQueries();
+      toast('Payment approved and applied to the bill', 'success');
+    },
+    onError: (e) =>
+      toast(e instanceof Error ? e.message : 'Could not approve the payment', 'error'),
+  });
+
+  const reject = useMutation({
+    mutationFn: (id: string) => api.post(`/payments/${id}/reject`, { reason }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries();
+      toast('Payment rejected', 'success');
+      setRejecting(null);
+      setReason('');
+    },
+    onError: (e) =>
+      toast(e instanceof Error ? e.message : 'Could not reject the payment', 'error'),
+  });
+
+  if (isLoading) return <LoadingRows rows={3} />;
+  if (error) return <ErrorState error={error} onRetry={onRetry} />;
+
+  if (!data || data.items.length === 0) {
+    return (
+      <EmptyState
+        icon={<WalletIcon size={30} />}
+        title="Nothing waiting for approval"
+        message="Money recorded by staff appears here until someone approves it."
+      />
+    );
+  }
+
+  return (
+    <>
+      <p className="text-sm text-ink-muted mb-3">
+        {formatMoney(data.totalAmount)} collected and waiting. It is not counted
+        against any bill until approved.
+      </p>
+
+      <div className="space-y-2">
+        {data.items.map((item) => (
+          <Card key={item.id} className="p-4">
+            <div className="flex items-start justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => navigate(`/tenants/${item.tenantId}`)}
+                className="min-w-0 text-left"
+              >
+                <h3 className="font-semibold truncate">{item.tenantName}</h3>
+                <p className="text-xs text-ink-muted truncate">
+                  {item.receiptNo} · {formatDate(item.paidAt)}
+                  {item.roomName && ` · Room ${item.roomName}`}
+                </p>
+              </button>
+              <span className="tabular font-semibold shrink-0">
+                {formatMoney(item.amount)}
+              </span>
+            </div>
+
+            <p className="text-xs text-ink-faint mt-2">
+              {item.method === 'CASH_AND_UPI'
+                ? `Cash ${formatMoney(item.cashAmount)} + UPI ${formatMoney(item.upiAmount)}`
+                : item.method.replace(/_/g, ' ').toLowerCase()}
+              {item.reference && ` · ${item.reference}`}
+            </p>
+
+            {canApprove ? (
+              <div className="flex gap-2 mt-3.5">
+                <button
+                  type="button"
+                  className="btn-primary !min-h-0 h-10 text-sm"
+                  disabled={approve.isPending}
+                  onClick={() => approve.mutate(item.id)}
+                >
+                  <CheckIcon size={16} />
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost !min-h-0 h-10 text-sm"
+                  onClick={() => setRejecting(item)}
+                >
+                  Reject
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs text-ink-faint mt-3">
+                Waiting for someone who can approve payments.
+              </p>
+            )}
+          </Card>
+        ))}
+      </div>
+
+      <Sheet
+        open={rejecting !== null}
+        onClose={() => setRejecting(null)}
+        title="Reject payment"
+        footer={
+          <>
+            <button type="button" className="btn-secondary" onClick={() => setRejecting(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn-danger"
+              disabled={!reason.trim() || reject.isPending}
+              onClick={() => rejecting && reject.mutate(rejecting.id)}
+            >
+              {reject.isPending ? 'Rejecting…' : 'Reject payment'}
+            </button>
+          </>
+        }
+      >
+        {rejecting && (
+          <>
+            <p className="text-sm text-ink-muted mb-4">
+              {formatMoney(rejecting.amount)} recorded for {rejecting.tenantName} on{' '}
+              {formatDate(rejecting.paidAt)}. Rejecting leaves the record in place
+              with your reason; it is never applied to a bill.
+            </p>
+            <FormRow label="Reason" hint="Required. Kept on the payment and in the audit trail.">
+              <input
+                className="input"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Tenant says this was not paid"
+              />
+            </FormRow>
+          </>
+        )}
+      </Sheet>
+    </>
   );
 }

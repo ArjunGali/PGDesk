@@ -35,6 +35,7 @@ export function AddTenantSheet({ open, onClose }: { open: boolean; onClose: () =
     emergencyContact: '',
     permanentAddress: '',
     officeName: '',
+    aadhaarNumber: '',
     stayType: 'MONTHLY',
     checkInDate: toInputDate(),
     plannedDays: '',
@@ -59,6 +60,7 @@ export function AddTenantSheet({ open, onClose }: { open: boolean; onClose: () =
         emergencyContact: form.emergencyContact.trim() || undefined,
         permanentAddress: form.permanentAddress.trim() || undefined,
         officeName: form.officeName.trim() || undefined,
+        aadhaarNumber: form.aadhaarNumber.replace(/\s/g, '') || undefined,
       });
 
       await api.post(`/tenants/${tenant.id}/stays`, {
@@ -149,6 +151,17 @@ export function AddTenantSheet({ open, onClose }: { open: boolean; onClose: () =
             className="input"
             value={form.officeName}
             onChange={(e) => setForm({ ...form, officeName: e.target.value })}
+          />
+        </FormRow>
+        <FormRow
+          label="Aadhaar number"
+          hint="Optional. Shown as the last four digits unless you are permitted to see it in full."
+        >
+          <input
+            className="input tabular"
+            inputMode="numeric"
+            value={form.aadhaarNumber}
+            onChange={(e) => setForm({ ...form, aadhaarNumber: e.target.value })}
           />
         </FormRow>
       </div>

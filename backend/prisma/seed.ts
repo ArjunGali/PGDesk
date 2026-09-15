@@ -36,7 +36,7 @@ async function main(): Promise<void> {
 
   await seedSettings();
   const roleIds = await seedPermissionsAndRoles();
-  await seedOwner(roleIds.owner);
+  await seedProfiles(roleIds);
   await seedFloorTypes();
   await seedDocumentTypes();
   await seedExpenseCategories();
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   console.log(`  Ekkatuthangal: ${ekkatuthangal} room(s) created`);
   console.log(`  Alandur: ${alandur} floor(s) created (rooms to be added in the app)`);
   console.log(
-    '\nSign in with the owner account, then review Settings → Pricing, E.B. and Charges.',
+    '\nOpen the app, choose the Owner profile, enter its PIN, then review Settings → Pricing, E.B. and Charges.',
   );
 }
 
@@ -125,31 +125,74 @@ async function seedPermissionsAndRoles(): Promise<Record<string, string>> {
   return roleIds;
 }
 
-async function seedOwner(ownerRoleId: string): Promise<void> {
-  const username = (process.env.SEED_OWNER_USERNAME ?? 'owner').toLowerCase();
-  const password = process.env.SEED_OWNER_PASSWORD ?? 'ChangeMe@123';
+/**
+ * Seeds the profiles that appear on the "Who's using the app?" screen.
+ *
+ * Only the Owner gets a PIN here, from the environment. The other profiles are
+ * created without one so the person using them chooses their own the first
+ * time they tap their name — nobody has to invent a PIN for someone else and
+ * then tell it to them.
+ */
+async function seedProfiles(roleIds: Record<string, string>): Promise<void> {
+  const ownerUsername = (process.env.SEED_OWNER_USERNAME ?? 'owner').toLowerCase();
+  const ownerPin = process.env.SEED_OWNER_PIN ?? '4071';
 
-  const existing = await prisma.user.findUnique({ where: { username } });
-  if (existing) {
-    console.log(`Owner account: "${username}" already exists, left unchanged`);
-    return;
+  // Hold the seed to the same rule the app enforces, so a configured PIN can
+  // never be one the app itself would refuse to accept.
+  assertSeedPin(ownerPin);
+
+  const profiles: Array<{
+    username: string;
+    fullName: string;
+    roleKey: string;
+    isOwner: boolean;
+    pin?: string;
+    avatarColor: string;
+    sortOrder: number;
+  }> = [
+    {
+      username: ownerUsername,
+      fullName: 'Owner',
+      roleKey: 'owner',
+      isOwner: true,
+      pin: ownerPin,
+      avatarColor: '#C6A15B',
+      sortOrder: 0,
+    },
+    { username: 'admin', fullName: 'Admin', roleKey: 'admin', isOwner: false, avatarColor: '#7A9E84', sortOrder: 1 },
+    { username: 'manager', fullName: 'Manager', roleKey: 'manager', isOwner: false, avatarColor: '#6E8CA0', sortOrder: 2 },
+    { username: 'staff', fullName: 'Staff', roleKey: 'staff', isOwner: false, avatarColor: '#A88A7D', sortOrder: 3 },
+  ];
+
+  let created = 0;
+  for (const profile of profiles) {
+    const existing = await prisma.user.findUnique({
+      where: { username: profile.username },
+    });
+    if (existing) continue;
+
+    await prisma.user.create({
+      data: {
+        username: profile.username,
+        fullName: profile.fullName,
+        pinHash: profile.pin ? await bcrypt.hash(profile.pin, 10) : null,
+        isOwner: profile.isOwner,
+        avatarColor: profile.avatarColor,
+        sortOrder: profile.sortOrder,
+        roles: roleIds[profile.roleKey]
+          ? { create: [{ roleId: roleIds[profile.roleKey] }] }
+          : undefined,
+      },
+    });
+    created += 1;
   }
 
-  const user = await prisma.user.create({
-    data: {
-      username,
-      fullName: 'Owner',
-      passwordHash: await bcrypt.hash(password, 12),
-      isOwner: true,
-      roles: { create: [{ roleId: ownerRoleId }] },
-    },
-  });
-
-  console.log(`Owner account: "${user.username}" created`);
-  if (!process.env.SEED_OWNER_PASSWORD) {
-    console.log(
-      '  !! Using the default password "ChangeMe@123" — change it immediately after signing in.',
-    );
+  console.log(
+    `Profiles: ${created} created (${profiles.map((p) => p.fullName).join(', ')})`,
+  );
+  if (created > 0) {
+    console.log(`  Owner PIN: ${ownerPin}${process.env.SEED_OWNER_PIN ? '' : ' (default — change it after first use)'}`);
+    console.log('  Admin, Manager and Staff have no PIN yet; each sets their own on first use.');
   }
 }
 
@@ -410,6 +453,24 @@ async function createSharingPrices(
         reason: 'Initial pricing from the system specification',
       },
     });
+  }
+}
+
+/** Mirrors assertPinFormat in the auth service; kept local so the seed has no runtime deps. */
+function assertSeedPin(pin: string): void {
+  const problem =
+    !/^\d{4,8}$/.test(pin)
+      ? 'must be 4 to 8 digits'
+      : /^(\d)\1+$/.test(pin)
+        ? 'must not repeat a single digit'
+        : '0123456789'.includes(pin) || '9876543210'.includes(pin)
+          ? 'must not be a running sequence like 1234'
+          : null;
+
+  if (problem) {
+    throw new Error(
+      `SEED_OWNER_PIN ${problem}. Set a different value in your environment.`,
+    );
   }
 }
 

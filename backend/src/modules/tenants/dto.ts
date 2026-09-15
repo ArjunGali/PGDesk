@@ -21,6 +21,7 @@ export class CreateTenantDto {
   @IsOptional() @IsString() permanentAddress?: string;
   @IsOptional() @IsString() officeAddress?: string;
   @IsOptional() @IsString() officeName?: string;
+  @IsOptional() @IsString() aadhaarNumber?: string;
   @IsOptional() @IsString() notes?: string;
   /** Custom field values keyed by definition key. */
   @IsOptional() customFields?: Record<string, string>;
@@ -38,6 +39,7 @@ export class UpdateTenantDto {
   @IsOptional() @IsString() permanentAddress?: string;
   @IsOptional() @IsString() officeAddress?: string;
   @IsOptional() @IsString() officeName?: string;
+  @IsOptional() @IsString() aadhaarNumber?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsString() photoDocumentId?: string;
   @IsOptional() customFields?: Record<string, string>;

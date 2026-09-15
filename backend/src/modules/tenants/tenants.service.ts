@@ -182,7 +182,7 @@ export class TenantsService {
   }
 
   /** Everything the tenant detail screen shows, in one call. */
-  async findOne(id: string) {
+  async findOne(id: string, options: { canSeeSensitive?: boolean } = {}) {
     const today = dayStart(new Date());
     const tenant = await this.prisma.tenant.findUnique({
       where: { id },
@@ -235,6 +235,8 @@ export class TenantsService {
 
     return {
       ...tenant,
+      // Masked unless the viewer is permitted to see it in full.
+      aadhaarNumber: maskAadhaar(tenant.aadhaarNumber, options.canSeeSensitive),
       completeness,
       currentStayId: currentStay?.id ?? null,
       currentLocation: currentAssignment
@@ -410,12 +412,24 @@ export class TenantsService {
     });
   }
 
-  /** Global search behind the magnifier icon. */
-  async search(term: string, branchScope: string[] = []) {
+  /**
+   * Global search behind the magnifier icon.
+   *
+   * Aadhaar is searchable because staff often have only the document in hand,
+   * but it is matched on digits alone and never returned in full unless the
+   * viewer holds the sensitive-data permission.
+   */
+  async search(
+    term: string,
+    branchScope: string[] = [],
+    options: { canSeeSensitive?: boolean } = {},
+  ) {
     if (!term || term.trim().length < 2) {
       return { tenants: [], rooms: [], branches: [] };
     }
     const q = term.trim();
+    const digits = q.replace(/\D/g, '');
+    const today = dayStart(new Date());
 
     const [tenants, rooms, branches] = await Promise.all([
       this.prisma.tenant.findMany({
@@ -425,10 +439,52 @@ export class TenantsService {
             { fullName: { contains: q, mode: 'insensitive' } },
             { mobile: { contains: q } },
             { officeName: { contains: q, mode: 'insensitive' } },
+            // Only treat it as an Aadhaar lookup once enough digits are given
+            // to be a deliberate search rather than an accidental match.
+            ...(digits.length >= 4 ? [{ aadhaarNumber: { contains: digits } }] : []),
           ],
         },
         take: 15,
-        select: { id: true, fullName: true, mobile: true },
+        select: {
+          id: true,
+          fullName: true,
+          mobile: true,
+          aadhaarNumber: true,
+          stays: {
+            where: { status: { in: [StayStatus.ACTIVE, StayStatus.NOTICE_GIVEN] } },
+            take: 1,
+            orderBy: { checkInDate: 'desc' },
+            select: {
+              id: true,
+              assignments: {
+                where: {
+                  startDate: { lte: today },
+                  OR: [{ endDate: null }, { endDate: { gte: today } }],
+                },
+                take: 1,
+                select: {
+                  bed: {
+                    select: {
+                      label: true,
+                      room: {
+                        select: {
+                          name: true,
+                          floor: {
+                            select: { name: true, branch: { select: { name: true } } },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+              invoices: {
+                where: { status: { in: ['ISSUED', 'PARTIALLY_PAID'] } },
+                select: { totalAmount: true, paidAmount: true },
+              },
+            },
+          },
+        },
       }),
       this.prisma.room.findMany({
         where: {
@@ -452,7 +508,29 @@ export class TenantsService {
     ]);
 
     return {
-      tenants,
+      tenants: tenants.map((tenant) => {
+        const stay = tenant.stays[0];
+        const assignment = stay?.assignments[0];
+        const outstanding = (stay?.invoices ?? []).reduce(
+          (total, invoice) =>
+            total + Number(invoice.totalAmount) - Number(invoice.paidAmount),
+          0,
+        );
+
+        return {
+          id: tenant.id,
+          fullName: tenant.fullName,
+          mobile: tenant.mobile,
+          aadhaarNumber: maskAadhaar(tenant.aadhaarNumber, options.canSeeSensitive),
+          branchName: assignment?.bed.room.floor.branch.name ?? null,
+          floorName: assignment?.bed.room.floor.name ?? null,
+          roomName: assignment?.bed.room.name ?? null,
+          bedLabel: assignment?.bed.label ?? null,
+          paymentStatus:
+            !stay ? 'No active stay' : outstanding > 0.005 ? 'Pending' : 'Up to date',
+          outstanding: outstanding > 0.005 ? outstanding.toFixed(2) : '0.00',
+        };
+      }),
       rooms: rooms.map((r) => ({
         id: r.id,
         name: r.name,
@@ -463,4 +541,20 @@ export class TenantsService {
       branches,
     };
   }
+}
+
+/**
+ * Aadhaar is shown as its last four digits unless the viewer is permitted to
+ * see it in full. A number on a search result is enough for staff to confirm
+ * they have the right person without putting it on every screen.
+ */
+export function maskAadhaar(
+  value: string | null,
+  canSeeSensitive = false,
+): string | null {
+  if (!value) return null;
+  if (canSeeSensitive) return value;
+  const digits = value.replace(/\D/g, '');
+  if (digits.length <= 4) return '••••';
+  return `•••• •••• ${digits.slice(-4)}`;
 }

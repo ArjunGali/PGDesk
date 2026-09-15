@@ -236,3 +236,17 @@ export const FilterIcon = (p: IconProps) => (
     <path d="M3 5h18l-7 8v6l-4 2v-8L3 5Z" />
   </Svg>
 );
+
+/** The unlock mark on the PIN screen — a visual cue, not device biometrics. */
+export const FingerprintIcon = (p: IconProps) => (
+  <Svg {...p} strokeWidth={1.3}>
+    <path d="M12 2.8c-2.2 0-4.2.9-5.6 2.4" />
+    <path d="M3.6 8.2A9.2 9.2 0 0 0 2.8 12v2.2" />
+    <path d="M21.2 12v2.6c0 1.2-.2 2.4-.6 3.5" />
+    <path d="M18.4 5.6A9.2 9.2 0 0 1 21 10" />
+    <path d="M12 6.4a5.6 5.6 0 0 0-5.6 5.6v3.4c0 .9-.2 1.8-.5 2.6" />
+    <path d="M17.6 12v4a13 13 0 0 1-.7 4.2" />
+    <path d="M12 10a2 2 0 0 0-2 2v4.2c0 1.4-.3 2.8-.9 4" />
+    <path d="M14 12v4.6c0 1.3-.1 2.6-.4 3.9" />
+  </Svg>
+);

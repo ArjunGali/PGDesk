@@ -56,6 +56,21 @@ export const SETTING_KEYS = {
 
   /** Tenant fields that must be filled before a profile counts as complete. */
   TENANT_REQUIRED_FIELDS: 'tenant.required_fields',
+
+  /** Collected money waits for approval before it counts against bills. */
+  PAYMENT_REQUIRE_VERIFICATION: 'payments.require_verification',
+  /** UPI handle shown with the QR on the collection screen. */
+  PAYMENT_UPI_ID: 'payments.upi_id',
+  /** Payee name shown under the QR. */
+  PAYMENT_UPI_PAYEE_NAME: 'payments.upi_payee_name',
+  /** Minutes within which an identical payment is treated as a double entry. */
+  PAYMENT_DUPLICATE_WINDOW_MINUTES: 'payments.duplicate_window_minutes',
+
+  /** What a notice-period shortfall is charged on. */
+  NOTICE_CHARGE_BASIS: 'stay.notice_charge_basis',
+
+  /** Erasing a vacated tenant requires an export to exist first. */
+  TENANT_ERASURE_REQUIRES_EXPORT: 'tenant.erasure_requires_export',
 } as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];
@@ -136,12 +151,12 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
     key: SETTING_KEYS.EB_SPLIT_METHOD,
     type: SettingType.STRING,
     group: 'eb',
-    label: 'E.B. split method',
+    label: 'E.B. split rule',
     description:
-      'OCCUPIED_DAYS weights each tenant by the days they occupied a bed in the room; EQUAL divides evenly between tenants present during the cycle.',
-    defaultValue: 'OCCUPIED_DAYS',
+      "ROOM_CAPACITY charges each tenant one bed's share of the room (1/sharing) for the days they were responsible, so an empty bed costs the owner rather than the other tenants. OCCUPIED_DAYS divides the whole room bill between whoever was present, weighted by days. EQUAL divides it evenly between them.",
+    defaultValue: 'ROOM_CAPACITY',
     isSystem: true,
-    options: ['OCCUPIED_DAYS', 'EQUAL'],
+    options: ['ROOM_CAPACITY', 'OCCUPIED_DAYS', 'EQUAL'],
   },
   {
     key: SETTING_KEYS.EB_MAX_PLAUSIBLE_UNITS,
@@ -265,6 +280,65 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
     label: 'Receipt number prefix',
     description: 'Prefix for generated payment receipt numbers',
     defaultValue: 'RCPT',
+    isSystem: true,
+  },
+  {
+    key: SETTING_KEYS.PAYMENT_REQUIRE_VERIFICATION,
+    type: SettingType.BOOLEAN,
+    group: 'payments',
+    label: 'Payments need approval',
+    description:
+      'When on, money recorded by someone without the approve permission waits for approval before it counts against a bill. Someone who can approve has their own entries approved automatically.',
+    defaultValue: 'true',
+    isSystem: true,
+  },
+  {
+    key: SETTING_KEYS.PAYMENT_UPI_ID,
+    type: SettingType.STRING,
+    group: 'payments',
+    label: 'UPI ID',
+    description: 'Shown as a QR code when collecting a UPI payment. Leave blank to hide the QR.',
+    defaultValue: '',
+    isSystem: true,
+  },
+  {
+    key: SETTING_KEYS.PAYMENT_UPI_PAYEE_NAME,
+    type: SettingType.STRING,
+    group: 'payments',
+    label: 'UPI payee name',
+    description: 'Name shown in the tenant\'s UPI app alongside the amount',
+    defaultValue: '',
+    isSystem: true,
+  },
+  {
+    key: SETTING_KEYS.PAYMENT_DUPLICATE_WINDOW_MINUTES,
+    type: SettingType.INTEGER,
+    group: 'payments',
+    label: 'Duplicate payment window (minutes)',
+    description:
+      'An identical amount recorded for the same tenant within this many minutes is refused as a probable double entry. Set to 0 to allow it.',
+    defaultValue: '10',
+    isSystem: true,
+  },
+  {
+    key: SETTING_KEYS.NOTICE_CHARGE_BASIS,
+    type: SettingType.STRING,
+    group: 'stay',
+    label: 'Notice shortfall charged on',
+    description:
+      'RENT_ONLY charges the remaining notice days at the rent excluding food. RENT_AND_FOOD includes the food component for tenants who take food.',
+    defaultValue: 'RENT_ONLY',
+    isSystem: true,
+    options: ['RENT_ONLY', 'RENT_AND_FOOD'],
+  },
+  {
+    key: SETTING_KEYS.TENANT_ERASURE_REQUIRES_EXPORT,
+    type: SettingType.BOOLEAN,
+    group: 'tenant',
+    label: 'Export before erasing a tenant',
+    description:
+      'When on, a vacated tenant\'s records must be exported before their personal data can be erased. Erasure is irreversible.',
+    defaultValue: 'true',
     isSystem: true,
   },
   {

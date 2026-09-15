@@ -22,6 +22,20 @@ interface MonthlyReport {
   month: string;
   periodStart: string;
   periodEnd: string;
+  profitAndLoss?: {
+    income: {
+      total: string;
+      byKind: Record<string, string>;
+      unattributed: string;
+      paymentCount: number;
+    };
+    expenses: {
+      total: string;
+      byCategory: Array<{ name: string; total: string }>;
+      count: number;
+    };
+    profit: string;
+  };
   collections: {
     billed: string;
     collected: string;
@@ -178,7 +192,73 @@ export function ReportsScreen() {
 
       {data && (
         <>
-          <Section title="Money">
+          {data.profitAndLoss && (
+          <Section title="Income, expenses and profit">
+            <ResponsiveGrid min={220}>
+              <StatCard
+                label="Income"
+                value={formatMoney(data.profitAndLoss.income.total)}
+                tone="positive"
+              />
+              <StatCard
+                label="Expenses"
+                value={formatMoney(data.profitAndLoss.expenses.total)}
+              />
+              <StatCard
+                label="Profit"
+                value={formatMoney(data.profitAndLoss.profit)}
+                tone={
+                  Number(data.profitAndLoss.profit) < 0 ? 'critical' : 'positive'
+                }
+              />
+            </ResponsiveGrid>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+              <Card className="p-4">
+                <p className="stat-label mb-2">Income by type</p>
+                {Object.keys(data.profitAndLoss.income.byKind).length === 0 ? (
+                  <p className="text-sm text-ink-muted">No money collected in this period.</p>
+                ) : (
+                  <dl>
+                    {Object.entries(data.profitAndLoss.income.byKind).map(
+                      ([kind, amount]) => (
+                        <Field
+                          key={kind}
+                          label={KIND_LABELS[kind] ?? kind}
+                          mono
+                          value={formatMoney(amount)}
+                        />
+                      ),
+                    )}
+                    {Number(data.profitAndLoss.income.unattributed) > 0 && (
+                      <Field
+                        label="Advances not yet applied"
+                        mono
+                        tone="muted"
+                        value={formatMoney(data.profitAndLoss.income.unattributed)}
+                      />
+                    )}
+                  </dl>
+                )}
+              </Card>
+
+              <Card className="p-4">
+                <p className="stat-label mb-2">Expenses by category</p>
+                {data.profitAndLoss.expenses.byCategory.length === 0 ? (
+                  <p className="text-sm text-ink-muted">No expenses in this period.</p>
+                ) : (
+                  <dl>
+                    {data.profitAndLoss.expenses.byCategory.map((row) => (
+                      <Field key={row.name} label={row.name} mono value={formatMoney(row.total)} />
+                    ))}
+                  </dl>
+                )}
+              </Card>
+            </div>
+          </Section>
+          )}
+
+          <Section title="Billed and collected">
             <ResponsiveGrid min={220}>
               <StatCard label="Billed" value={formatMoney(data.collections.billed)} />
               <StatCard

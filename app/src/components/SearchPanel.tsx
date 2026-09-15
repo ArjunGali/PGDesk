@@ -4,10 +4,21 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { useUiStore } from '@/stores/ui.store';
 import { BuildingIcon, BedIcon, SearchIcon, UsersIcon } from './Icons';
-import { Sheet } from './ui';
+import { Chip, Sheet } from './ui';
 
 interface SearchResults {
-  tenants: Array<{ id: string; fullName: string; mobile: string | null }>;
+  tenants: Array<{
+    id: string;
+    fullName: string;
+    mobile: string | null;
+    aadhaarNumber: string | null;
+    branchName: string | null;
+    floorName: string | null;
+    roomName: string | null;
+    bedLabel: string | null;
+    paymentStatus: string;
+    outstanding: string;
+  }>;
   rooms: Array<{
     id: string;
     name: string;
@@ -72,7 +83,7 @@ export function SearchPanel() {
           ref={inputRef}
           value={term}
           onChange={(e) => setTerm(e.target.value)}
-          placeholder="Tenant name, mobile, room or branch"
+          placeholder="Name, mobile, Aadhaar, room or branch"
           className="input pl-11"
           autoComplete="off"
           enterKeyHint="search"
@@ -99,7 +110,22 @@ export function SearchPanel() {
             items={data.tenants.map((t) => ({
               key: t.id,
               primary: t.fullName,
-              secondary: t.mobile ?? undefined,
+              secondary: [
+                t.mobile,
+                [t.branchName, t.floorName, t.roomName && `Room ${t.roomName}`]
+                  .filter(Boolean)
+                  .join(' · ') || null,
+                t.aadhaarNumber,
+              ]
+                .filter(Boolean)
+                .join('  ·  '),
+              badge: t.paymentStatus,
+              badgeTone:
+                t.paymentStatus === 'Pending'
+                  ? ('caution' as const)
+                  : t.paymentStatus === 'Up to date'
+                    ? ('positive' as const)
+                    : ('neutral' as const),
               onSelect: () => go(`/tenants/${t.id}`),
             }))}
           />
@@ -139,6 +165,8 @@ function ResultGroup({
     key: string;
     primary: string;
     secondary?: string;
+    badge?: string;
+    badgeTone?: 'neutral' | 'positive' | 'caution';
     onSelect: () => void;
   }>;
 }) {
@@ -157,7 +185,12 @@ function ResultGroup({
             onClick={item.onSelect}
             className="w-full text-left card px-3.5 py-3 hover:border-line-strong transition-colors"
           >
-            <p className="font-medium truncate">{item.primary}</p>
+            <div className="flex items-start justify-between gap-3">
+              <p className="font-medium truncate">{item.primary}</p>
+              {item.badge && (
+                <Chip tone={item.badgeTone ?? 'neutral'}>{item.badge}</Chip>
+              )}
+            </div>
             {item.secondary && (
               <p className="text-sm text-ink-muted truncate">{item.secondary}</p>
             )}

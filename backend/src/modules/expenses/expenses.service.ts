@@ -1,12 +1,64 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PaymentMethod } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { extname, join, resolve } from 'node:path';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { dayStart } from '../../common/utils/dates';
 import { sum, toDb } from '../../common/utils/money';
 
+const RECEIPT_MIME = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'application/pdf',
+]);
+
 @Injectable()
 export class ExpensesService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly storageRoot: string;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    config: ConfigService,
+  ) {
+    this.storageRoot = resolve(config.get<string>('STORAGE_ROOT', './storage'));
+  }
+
+  /** Stores a receipt photo next to the expense that it evidences. */
+  async attachReceipt(
+    expenseId: string,
+    file: { fileName: string; mimeType: string; buffer: Buffer },
+    _actorId: string,
+  ) {
+    if (!RECEIPT_MIME.has(file.mimeType)) {
+      throw new BadRequestException(
+        'A receipt must be a JPG, PNG, WEBP, HEIC image or a PDF',
+      );
+    }
+    const exists = await this.prisma.expense.count({ where: { id: expenseId } });
+    if (!exists) throw new NotFoundException('Expense not found');
+
+    const ext = /^\.[a-z0-9]{1,5}$/i.test(extname(file.fileName))
+      ? extname(file.fileName).toLowerCase()
+      : '.bin';
+    const relativeDir = join('expenses', expenseId);
+    const relativePath = join(relativeDir, `${randomUUID()}${ext}`);
+
+    await mkdir(join(this.storageRoot, relativeDir), { recursive: true });
+    await writeFile(join(this.storageRoot, relativePath), file.buffer);
+
+    return this.prisma.expense.update({
+      where: { id: expenseId },
+      data: { attachmentPath: relativePath, attachmentName: file.fileName },
+    });
+  }
 
   listCategories() {
     return this.prisma.expenseCategory.findMany({

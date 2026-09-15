@@ -78,11 +78,18 @@ export default {
           from: { transform: 'translateX(-100%)' },
           to: { transform: 'translateX(0)' },
         },
+        // A wrong PIN should feel wrong before it is read.
+        shake: {
+          '0%, 100%': { transform: 'translateX(0)' },
+          '20%, 60%': { transform: 'translateX(-7px)' },
+          '40%, 80%': { transform: 'translateX(7px)' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 160ms ease-out',
         'slide-up': 'slide-up 200ms cubic-bezier(0.16, 1, 0.3, 1)',
         'slide-in-left': 'slide-in-left 220ms cubic-bezier(0.16, 1, 0.3, 1)',
+        shake: 'shake 400ms cubic-bezier(0.36, 0.07, 0.19, 0.97)',
       },
     },
   },

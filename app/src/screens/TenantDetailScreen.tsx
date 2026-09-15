@@ -43,6 +43,7 @@ interface TenantDetail {
   permanentAddress: string | null;
   officeAddress: string | null;
   officeName: string | null;
+  aadhaarNumber: string | null;
   notes: string | null;
   completeness: {
     complete: boolean;
@@ -308,6 +309,7 @@ export function TenantDetailScreen() {
               <Field label="Emergency contact name" value={data.emergencyName} />
               <Field label="Emergency contact" value={data.emergencyContact} />
               <Field label="Office / college" value={data.officeName} />
+              <Field label="Aadhaar" value={data.aadhaarNumber} mono />
               <Field label="Permanent address" value={data.permanentAddress} />
               <Field label="Office address" value={data.officeAddress} />
               {data.customFieldValues.map((v) => (
@@ -932,6 +934,7 @@ function EditTenantSheet({
     ['emergencyName', 'Emergency contact name'],
     ['emergencyContact', 'Emergency contact number'],
     ['officeName', 'Office / college'],
+    ['aadhaarNumber', 'Aadhaar number'],
     ['permanentAddress', 'Permanent address'],
     ['officeAddress', 'Office address'],
     ['notes', 'Notes'],

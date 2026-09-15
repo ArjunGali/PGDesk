@@ -15,7 +15,19 @@ export interface AuthUser {
   branchIds: string[];
 }
 
-interface LoginResponse {
+/** A card on the "Who's using the app?" screen. */
+export interface Profile {
+  id: string;
+  fullName: string;
+  roleNames: string[];
+  isOwner: boolean;
+  avatarPath: string | null;
+  avatarColor: string | null;
+  hasPin: boolean;
+  lockedUntil: string | null;
+}
+
+interface UnlockResponse {
   accessToken: string;
   refreshToken: string;
   user: AuthUser;
@@ -24,10 +36,14 @@ interface LoginResponse {
 interface AuthState {
   user: AuthUser | null;
   status: 'loading' | 'authenticated' | 'unauthenticated';
-  error: string | null;
+  /** Which profile card is selected; drives the PIN screen. */
+  selectedProfile: Profile | null;
+
   restore: () => Promise<void>;
-  login: (username: string, password: string) => Promise<void>;
-  logout: () => Promise<void>;
+  selectProfile: (profile: Profile | null) => void;
+  unlock: (profileId: string, pin: string) => Promise<void>;
+  setInitialPin: (profileId: string, pin: string) => Promise<void>;
+  lock: () => Promise<void>;
   /** Owners bypass every check; this mirrors the server rule exactly. */
   can: (permission: string) => boolean;
 }
@@ -35,7 +51,7 @@ interface AuthState {
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   status: 'loading',
-  error: null,
+  selectedProfile: null,
 
   async restore() {
     const { access } = await loadTokens();
@@ -45,31 +61,38 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     try {
       const user = await api.get<AuthUser>('/auth/me');
-      set({ user, status: 'authenticated', error: null });
+      set({ user, status: 'authenticated' });
     } catch {
       // The interceptor already cleared unusable tokens.
       set({ status: 'unauthenticated', user: null });
     }
   },
 
-  async login(username, password) {
-    set({ error: null });
-    const result = await api.post<LoginResponse>('/auth/login', {
-      username,
-      password,
-    });
-    await saveTokens(result.accessToken, result.refreshToken);
-    set({ user: result.user, status: 'authenticated', error: null });
+  selectProfile(selectedProfile) {
+    set({ selectedProfile });
   },
 
-  async logout() {
+  async unlock(profileId, pin) {
+    const result = await api.post<UnlockResponse>('/auth/unlock', { profileId, pin });
+    await saveTokens(result.accessToken, result.refreshToken);
+    set({ user: result.user, status: 'authenticated', selectedProfile: null });
+  },
+
+  async setInitialPin(profileId, pin) {
+    const result = await api.post<UnlockResponse>('/auth/set-pin', { profileId, pin });
+    await saveTokens(result.accessToken, result.refreshToken);
+    set({ user: result.user, status: 'authenticated', selectedProfile: null });
+  },
+
+  /** Returns to the profile screen — the app's equivalent of signing out. */
+  async lock() {
     try {
       await api.post('/auth/logout', {});
     } catch {
-      // Signing out locally matters more than telling the server.
+      // Locking locally matters more than telling the server.
     }
     await saveTokens(null, null);
-    set({ user: null, status: 'unauthenticated' });
+    set({ user: null, status: 'unauthenticated', selectedProfile: null });
   },
 
   can(permission) {
@@ -79,7 +102,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 }));
 
-// A session that cannot be refreshed drops straight to the sign-in screen.
+// A session that cannot be refreshed drops back to the profile screen.
 setUnauthenticatedHandler(() => {
-  useAuthStore.setState({ user: null, status: 'unauthenticated' });
+  useAuthStore.setState({
+    user: null,
+    status: 'unauthenticated',
+    selectedProfile: null,
+  });
 });

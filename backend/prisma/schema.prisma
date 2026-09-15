@@ -78,26 +78,44 @@ enum UserStatus {
   DISABLED
 }
 
+/// A profile shown on the "Who's using the app?" screen.
+///
+/// There is no username/password sign-in. A profile is chosen from a list and
+/// unlocked with an app-managed PIN — deliberately not the device's biometric
+/// hardware, so the same APK behaves identically on any phone or tablet.
 model User {
   id           String     @id @default(uuid())
   username     String     @unique
   email        String?    @unique
   fullName     String
   mobile       String?
-  passwordHash String
+  /// App-level PIN, hashed. Null means the profile still has to set one.
+  pinHash      String?
+  /// Failed-attempt throttling, so a PIN cannot be brute-forced by hand.
+  failedPinAttempts Int    @default(0)
+  lockedUntil  DateTime?
+  /// Avatar image stored under the documents root; initials are used if absent.
+  avatarPath   String?
+  /// Fallback avatar tint when there is no photo.
+  avatarColor  String?
   status       UserStatus @default(ACTIVE)
   lastLoginAt  DateTime?
   /// Bypasses permission checks. There is always at least one owner account.
   isOwner      Boolean    @default(false)
+  /// Hidden profiles still work but do not appear on the selection screen.
+  showOnProfileScreen Boolean @default(true)
+  sortOrder    Int        @default(0)
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  roles           UserRole[]
-  branchScopes    UserBranchScope[]
-  auditLogs       AuditLog[]
-  settingChanges  AppSettingHistory[]
-  refreshTokens   RefreshToken[]
-  notifications   Notification[]      @relation("NotificationUser")
+  roles              UserRole[]
+  branchScopes       UserBranchScope[]
+  auditLogs          AuditLog[]
+  settingChanges     AppSettingHistory[]
+  refreshTokens      RefreshToken[]
+  notifications      Notification[]      @relation("NotificationUser")
+  verifiedPayments   Payment[]           @relation("PaymentVerifier")
+  dataExports        DataExport[]
 }
 
 model RefreshToken {
@@ -318,20 +336,49 @@ model Tenant {
   permanentAddress String?
   officeAddress    String?
   officeName       String?
+  /// Searchable, but masked to the last four digits unless the viewer holds
+  /// the permission to see it in full. Cleared by the erasure workflow.
+  aadhaarNumber    String?
   photoDocumentId  String?
   notes            String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   /// Soft delete. Tenant data is only removed through the export+erase flow.
   archivedAt       DateTime?
+  /// Set once personal data has been erased. Stays, bills, payments and audit
+  /// rows survive; the identifying fields above are cleared.
+  personalDataErasedAt DateTime?
+  erasedById       String?
 
   stays             Stay[]
   documents         Document[]
   customFieldValues CustomFieldValue[]
   notifications     Notification[]
+  dataExports       DataExport[]
 
   @@index([fullName])
   @@index([mobile])
+  @@index([aadhaarNumber])
+}
+
+/// Proof that a tenant's records were exported before anything was erased.
+///
+/// Erasure is irreversible, so it is gated on one of these existing: the data
+/// has to leave the app in a readable form before it leaves the database.
+model DataExport {
+  id           String   @id @default(uuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  format       String
+  fileName     String
+  sizeBytes    Int
+  /// SHA-256 of the exported file, so the operator can prove what was handed over.
+  checksum     String
+  exportedById String?
+  exportedBy   User?    @relation(fields: [exportedById], references: [id])
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId, createdAt])
 }
 
 enum StayType {
@@ -580,10 +627,27 @@ model InvoiceLine {
 enum PaymentMethod {
   CASH
   UPI
+  /// Part cash, part UPI — the amounts are held separately on the payment.
+  CASH_AND_UPI
   BANK_TRANSFER
   CARD
   CHEQUE
   OTHER
+}
+
+/// Where a payment sits in the collect-and-approve workflow.
+///
+/// Only a VERIFIED payment is allocated against bills. Money someone says they
+/// collected is not money the ledger recognises until it is approved.
+enum PaymentStatus {
+  /// Recorded but not yet submitted for approval.
+  PENDING
+  /// Awaiting approval by someone with the verify permission.
+  SUBMITTED
+  /// Approved; allocated to bills and counted in collections.
+  VERIFIED
+  /// Rejected with a reason; never allocated.
+  REJECTED
 }
 
 model Payment {
@@ -593,9 +657,17 @@ model Payment {
   stay        Stay          @relation(fields: [stayId], references: [id], onDelete: Cascade)
   amount      Decimal       @db.Decimal(12, 2)
   method      PaymentMethod @default(CASH)
+  /// Split for CASH_AND_UPI; for a single-method payment one of these is zero.
+  cashAmount  Decimal       @db.Decimal(12, 2) @default(0)
+  upiAmount   Decimal       @db.Decimal(12, 2) @default(0)
+  status      PaymentStatus @default(SUBMITTED)
   paidAt      DateTime
   reference   String?
   notes       String?
+  verifiedById String?
+  verifiedBy   User?        @relation("PaymentVerifier", fields: [verifiedById], references: [id])
+  verifiedAt   DateTime?
+  rejectionReason String?
   /// Reversals keep the original row and add a linked reversing row.
   reversedAt  DateTime?
   reversalOfId String?
@@ -605,6 +677,7 @@ model Payment {
   allocations PaymentAllocation[]
 
   @@index([stayId, paidAt])
+  @@index([status])
 }
 
 /// Money is applied to specific invoices so "what is this tenant's balance?"
@@ -849,7 +922,9 @@ model Expense {
   paidTo      String?
   method      PaymentMethod @default(CASH)
   notes       String?
+  /// Receipt or bill photo, stored under the documents root.
   attachmentPath String?
+  attachmentName String?
   createdById String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

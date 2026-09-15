@@ -19,6 +19,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { PricingModule } from './modules/pricing/pricing.module';
 import { PropertyModule } from './modules/property/property.module';
 import { ReportsModule } from './modules/reports/reports.module';
+import { RetentionModule } from './modules/retention/retention.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { SettlementsModule } from './modules/settlements/settlements.module';
 import { TenantsModule } from './modules/tenants/tenants.module';
@@ -49,6 +50,7 @@ import { UsersModule } from './modules/users/users.module';
     NotificationsModule,
     ReportsModule,
     ExportsModule,
+    RetentionModule,
   ],
   controllers: [HealthController],
   providers: [

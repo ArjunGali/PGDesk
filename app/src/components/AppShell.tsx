@@ -256,7 +256,7 @@ function SideRail() {
 
 function Drawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const user = useAuthStore((s) => s.user);
-  const logout = useAuthStore((s) => s.logout);
+  const lock = useAuthStore((s) => s.lock);
   const navigate = useNavigate();
 
   if (!open) return null;
@@ -314,11 +314,11 @@ function Drawer({ open, onClose }: { open: boolean; onClose: () => void }) {
             type="button"
             className="btn-secondary w-full"
             onClick={async () => {
-              await logout();
+              await lock();
               navigate('/');
             }}
           >
-            Sign out
+            Switch profile
           </button>
         </div>
       </div>

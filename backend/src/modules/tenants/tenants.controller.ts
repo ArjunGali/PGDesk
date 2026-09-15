@@ -43,7 +43,11 @@ export class TenantsController {
   @Get('search')
   @RequirePermissions(PERMISSIONS.TENANT_VIEW)
   search(@Query('q') q: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.tenants.search(q ?? '', user.branchIds);
+    return this.tenants.search(q ?? '', user.branchIds, {
+      canSeeSensitive:
+        user.isOwner ||
+        user.permissions.includes(PERMISSIONS.TENANT_VIEW_SENSITIVE),
+    });
   }
 
   // --- Tenants -----------------------------------------------------------
@@ -56,8 +60,12 @@ export class TenantsController {
 
   @Get('tenants/:id')
   @RequirePermissions(PERMISSIONS.TENANT_VIEW)
-  findOne(@Param('id') id: string) {
-    return this.tenants.findOne(id);
+  findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tenants.findOne(id, {
+      canSeeSensitive:
+        user.isOwner ||
+        user.permissions.includes(PERMISSIONS.TENANT_VIEW_SENSITIVE),
+    });
   }
 
   @Get('tenants/:id/completeness')
@@ -67,7 +75,7 @@ export class TenantsController {
   }
 
   @Post('tenants')
-  @RequirePermissions(PERMISSIONS.TENANT_MANAGE)
+  @RequirePermissions(PERMISSIONS.TENANT_CREATE)
   async create(
     @Body() dto: CreateTenantDto,
     @CurrentUser() user: AuthenticatedUser,
@@ -84,7 +92,7 @@ export class TenantsController {
   }
 
   @Patch('tenants/:id')
-  @RequirePermissions(PERMISSIONS.TENANT_MANAGE)
+  @RequirePermissions(PERMISSIONS.TENANT_EDIT)
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateTenantDto,
@@ -122,7 +130,7 @@ export class TenantsController {
   // --- Stays -------------------------------------------------------------
 
   @Post('tenants/:id/stays')
-  @RequirePermissions(PERMISSIONS.TENANT_MANAGE)
+  @RequirePermissions(PERMISSIONS.TENANT_CREATE)
   createStay(
     @Param('id') id: string,
     @Body() dto: CreateStayDto,
@@ -172,7 +180,7 @@ export class TenantsController {
   }
 
   @Post('stays/:id/food')
-  @RequirePermissions(PERMISSIONS.TENANT_MANAGE)
+  @RequirePermissions(PERMISSIONS.TENANT_EDIT)
   changeFood(
     @Param('id') id: string,
     @Body() dto: ChangeFoodDto,

@@ -13,6 +13,14 @@ Android APK  →  React + TypeScript (Capacitor)  →  HTTPS REST  →  NestJS  
 
 ---
 
+## Launch flow
+
+```
+APP OPEN  →  PROFILE SELECTION  →  APP PIN  →  HOME
+```
+
+There is no username/password screen anywhere in the app.
+
 ## What it does
 
 | Area | Capability |
@@ -22,7 +30,9 @@ Android APK  →  React + TypeScript (Capacitor)  →  HTTPS REST  →  NestJS  
 | **Occupancy** | Bed-level assignment history. Room switch, cross-branch moves and tenant swaps run in one transaction. Double booking and over-capacity are refused. |
 | **Pricing** | Global → branch → sharing → room → tenant, most specific wins, every rule effective-dated. |
 | **Billing** | Monthly and daily stays, part-month pro-rata, mid-month food and room changes billed correctly, E.B. folded in. |
-| **Payments** | Receipts, allocation to specific bills, advances, and reversals that keep the original record. |
+| **Access** | No login page. The app opens on a profile list and unlocks with an app-managed PIN (not device biometrics). Owner / Admin / Manager / Staff, with fully configurable permissions. |
+| **Payments** | Collect-then-approve workflow, cash / UPI / split with an on-device UPI QR, backdating allowed and future dates refused, duplicate detection, allocation to specific bills, and reversals that keep the original record. |
+| **Retention** | Export a former tenant's full record, then irreversibly erase their personal data while every financial and audit record survives. |
 | **Deposits** | Append-only ledger with refund, adjustment and forfeit states. |
 | **Vacating** | Notice with shortfall calculation, final settlement, refund or amount payable. |
 | **E.B.** | Meter readings, per-cycle calculation, split between occupants by days occupied. |
@@ -60,9 +70,10 @@ npm run start:dev
 The API listens on `http://0.0.0.0:3000/api`. `GET /api/health` reports
 database connectivity.
 
-The seed creates an owner account. Set `SEED_OWNER_USERNAME` and
-`SEED_OWNER_PASSWORD` before running it, or change the password immediately
-after the first sign-in.
+The seed creates four profiles — Owner, Admin, Manager and Staff. Only the
+Owner is given a PIN, from `SEED_OWNER_PIN`; the others choose their own the
+first time they tap their name. Set that variable before seeding, or change the
+PIN from Settings straight afterwards.
 
 ### 3. App (development)
 
@@ -106,7 +117,9 @@ The values the specification gives are seed data for a fresh install:
 | Food difference (per month) | ₹2,000 |
 | Common charge (per month) | ₹150 |
 | E.B. rate per unit | ₹12.50 |
+| E.B. split rule | Room capacity (one bed's share per tenant) |
 | Notice period | 30 days |
+| Payments need approval | On |
 
 Changing any of them affects future calculations only. Bills, E.B. cycles and
 settlements already recorded keep the values they were produced with, and every
@@ -128,9 +141,17 @@ Seeded from the specification, and all editable in the app afterwards:
 ## Testing
 
 ```bash
-cd backend && npm test        # E.B. algorithm + billing invariants
-npm run typecheck             # both workspaces, from the repo root
+cd backend
+npm test                 # unit tests: E.B. algorithm, billing split, money, PINs
+npm run test:integration # against a real PostgreSQL schema, dropped afterwards
+npm run test:all         # both
+
+npm run typecheck        # both workspaces, from the repo root
 ```
+
+Integration tests create their own schema (`test_<pid>`) from
+`schema.prisma`, so they never touch development data. Point them elsewhere
+with `TEST_DATABASE_URL` if you prefer a separate database.
 
 ---
 

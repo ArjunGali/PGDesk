@@ -23,6 +23,17 @@ export class ReportsController {
     );
   }
 
+  /** Income, expenses and profit — the owner's bottom line. */
+  @Get('profit')
+  @RequirePermissions(PERMISSIONS.REPORT_VIEW)
+  profit(
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.reports.profitAndLoss(new Date(from), new Date(to), branchId);
+  }
+
   @Get('collections')
   @RequirePermissions(PERMISSIONS.REPORT_VIEW)
   collections(

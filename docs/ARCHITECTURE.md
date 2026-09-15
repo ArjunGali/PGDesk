@@ -6,6 +6,27 @@ backend carries the burden of dates, rates, history and correctness.
 
 ---
 
+## 0. There is no login page
+
+The app opens on a profile list — "Who's using the app?" — and unlocks with a
+short PIN. No username, no password, no sign-in form.
+
+The PIN is **app-level**, deliberately not Android's biometric API. The same
+APK then behaves identically on a shared tablet with no enrolled fingerprint
+and on someone's personal phone, and the PIN is verified on the server, so a
+tampered client cannot skip the screen.
+
+A short PIN is only acceptable because the weak ones are refused (`assertPinFormat`
+rejects runs like 1234 and repeated digits) and attempts are throttled: five
+wrong entries lock the profile for five minutes. Those two limits are fixed in
+code rather than configurable, because an owner should not be able to weaken
+them by accident.
+
+A profile created without a PIN sets its own on first use, so nobody has to
+invent a PIN for someone else and then tell it to them.
+
+---
+
 ## 1. The backend is the source of truth
 
 The app never computes money, never decides what a tenant owes, and never
@@ -147,9 +168,10 @@ service, not just hidden in the UI.
 
 ## 8. The E.B. algorithm
 
-This is the one piece of business logic the specification fixes in code, in
-`eb.algorithm.ts`. Its inputs — the rate, the split method, the plausibility
-limit — still come from configuration; only the procedure is fixed:
+This is the one piece of business logic fixed in code, in `eb.algorithm.ts`.
+Its inputs — the rate, the split rule, the plausibility limit, the room's
+sharing capacity — all come from configuration or from the property structure.
+Only the procedure is fixed:
 
 1. **Units** = closing reading − opening reading. If the closing reading is
    flagged as a meter reset, the meter was replaced and started from zero, so
@@ -158,16 +180,65 @@ limit — still come from configuration; only the procedure is fixed:
    data-entry mistake, and billing a wrapped or negative value silently is
    worse than refusing.
 3. **Amount** = units × rate, rounded to two decimals.
-4. **Split** between the tenants who occupied a bed in that room during the
-   period — weighted by days occupied, or equally, per configuration.
-5. Shares allocated by largest remainder, so they sum to the total exactly.
+4. **Split** by the configured rule.
+5. Shares allocated by largest remainder, so the tenants' shares plus the
+   owner's share equal the total exactly.
 
-The function is **pure**: no database, no clock. Same inputs, same output.
-That is what makes a historical cycle reproducible and the whole thing
-testable, and why finalising a cycle snapshots the rate onto it.
+### The split rule
 
-When nobody occupied the room, the amount is reported as unattributed and stays
-with the property rather than being forced onto someone.
+`ROOM_CAPACITY` is the default, and it is what the property actually does:
+
+> Each tenant carries **one bed's worth** of the room — `1/capacity` — pro-rated
+> for the days they were responsible for it.
+
+A tenant alone in a 2-sharing room pays **half** the room's electricity from
+their check-in date onward, even though the other bed is empty. The other half
+is reported as the **owner's share** rather than being loaded onto the person
+who happens to be there. That is the specification's daily-tenant example, and
+it is the reason this rule exists: vacancy is the owner's cost, not the
+tenant's.
+
+`unallocatedAmount` on every cycle is exactly that owner's share, so the cost
+of an empty bed is visible rather than buried.
+
+Two alternatives remain available as configuration for properties that bill
+differently:
+
+- `OCCUPIED_DAYS` divides the whole room bill between whoever was present,
+  weighted by days. An empty bed therefore *increases* what the others pay.
+- `EQUAL` divides it evenly between everyone present at any point.
+
+The function is **pure**: no database, no clock. Same inputs, same output —
+which is what makes a historical cycle reproducible and the rule testable.
+Finalising a cycle snapshots the rate onto it, so a later rate change cannot
+alter it.
+
+---
+
+## 8b. Payments are collected, then approved
+
+A payment is not money until someone with the authority says it is. Recording
+one creates a `SUBMITTED` payment that is **not applied to any bill**; approving
+it allocates it. Someone who holds `payment.approve` has their own entries
+approved on the spot, so an owner collecting rent is not waiting on themselves.
+
+This is why `PaymentStatus` exists on the payment rather than being inferred:
+collections, reports and outstanding balances all filter on `VERIFIED`, so money
+sitting in the approve queue never inflates a figure.
+
+Three further rules, all learned from how rent actually gets collected:
+
+- **Backdating is allowed, forward dating is not.** Money often gets entered
+  days late; a payment dated tomorrow would make a bill look settled before it
+  was.
+- **Duplicates are caught.** The same amount for the same tenant on the same
+  date within a configurable window is refused, with a confirmation path for a
+  genuinely separate second payment.
+- **Cash + UPI** splits are stored as two amounts that must add up to the
+  total, so the cash drawer and the bank statement can both be reconciled.
+
+The UPI QR is generated on the device from the configured UPI ID, so it works
+on a property with no internet beyond its own LAN.
 
 ---
 
@@ -213,6 +284,33 @@ A tenant arriving at the door should not wait on paperwork. Only a name is
 required. Which fields count as required is configuration
 (`tenant.required_fields` plus required document types), and anything missing
 is flagged under the bell with a Complete Profile action — never a blocked save.
+
+---
+
+## 11b. Erasing a former tenant
+
+Deleting is easy; deleting the *right half* is the problem. A tenant's name,
+phone number, address, Aadhaar and documents are personal data the property has
+no reason to keep forever. Their bills, payments, deposits and audit trail are
+financial records that must still add up afterwards.
+
+So erasure:
+
+- **clears** the identifying fields and destroys the uploaded documents,
+- **keeps** every Stay, Invoice, Payment, DepositEntry and AuditLog row, still
+  linked to the same tenant id,
+- leaves the Tenant row in place as `Erased tenant <short id>`, so no bill is
+  ever orphaned.
+
+A report run after an erasure still balances; it simply refers to someone who
+no longer has a name. This is covered by
+`retention.integration.spec.ts`.
+
+Erasure is gated on an export existing first (configurable), requires a typed
+`ERASE` confirmation and a reason, and is written to the audit trail. The
+export itself is a seven-sheet workbook — profile, stays, room history, bills,
+payments, deposits, electricity — and is the only place the full Aadhaar is
+written out, because it is the copy handed over before the data goes.
 
 ---
 

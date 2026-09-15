@@ -162,6 +162,21 @@ export class DocumentsService {
   }
 
   /**
+   * Deletes a stored file whose database row has already gone.
+   *
+   * Used by the erasure workflow, which clears the rows inside a transaction
+   * and only then destroys the files — so a failed transaction never leaves
+   * the property with missing documents.
+   */
+  async removeFileOnly(storagePath: string): Promise<void> {
+    try {
+      await unlink(this.resolveWithinRoot(storagePath));
+    } catch {
+      // Already gone, or never written. The row is the record of truth.
+    }
+  }
+
+  /**
    * Guards against a stored path escaping the storage root. Paths are
    * generated server-side, but this stays as a second line of defence.
    */

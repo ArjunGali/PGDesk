@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   BranchStatus,
   InvoiceStatus,
+  PaymentStatus,
   StayStatus,
 } from '@prisma/client';
 import Decimal from 'decimal.js';
@@ -39,7 +40,13 @@ export class ReportsService {
 
     const [payments, invoices, expenses] = await Promise.all([
       this.prisma.payment.findMany({
-        where: { paidAt: { gte: start, lte: end }, stay: branchFilter },
+        // Only approved money is income. Anything still awaiting approval has
+        // not reached the ledger and must not inflate a collections figure.
+        where: {
+          paidAt: { gte: start, lte: end },
+          stay: branchFilter,
+          status: PaymentStatus.VERIFIED,
+        },
         include: { stay: { include: { tenant: { select: { fullName: true } } } } },
       }),
       this.prisma.invoice.findMany({
@@ -93,6 +100,98 @@ export class ReportsService {
       collectedByMethod: Object.fromEntries(
         [...byMethod.entries()].map(([k, v]) => [k, v.toFixed(2)]),
       ),
+    };
+  }
+
+  /**
+   * Income, expenses and profit for a period.
+   *
+   * Income is money actually collected and approved, split by what it was
+   * charged for, so "rent" and "electricity" can be read separately. Profit is
+   * simply income minus expenses — the number the owner is actually after.
+   */
+  async profitAndLoss(from: Date, to: Date, branchId?: string) {
+    const start = dayStart(from);
+    const end = dayStart(to);
+
+    const branchFilter = branchId
+      ? { assignments: { some: { bed: { room: { floor: { branchId } } } } } }
+      : undefined;
+
+    const [payments, expenses] = await Promise.all([
+      this.prisma.payment.findMany({
+        where: {
+          paidAt: { gte: start, lte: end },
+          status: PaymentStatus.VERIFIED,
+          stay: branchFilter,
+        },
+        include: {
+          allocations: { include: { invoice: { include: { lines: true } } } },
+        },
+      }),
+      this.prisma.expense.findMany({
+        where: { spentAt: { gte: start, lte: end }, branchId },
+        include: { category: true },
+      }),
+    ]);
+
+    // Attribute each rupee collected to what it paid for, in the same
+    // proportions as the bill it was applied to. Money that arrived as an
+    // unallocated advance is reported separately rather than guessed at.
+    const incomeByKind = new Map<string, Decimal>();
+    let unattributed = new Decimal(0);
+
+    for (const payment of payments) {
+      const paymentAmount = money(payment.amount);
+      const allocatedTotal = sum(payment.allocations.map((a) => a.amount));
+      unattributed = unattributed.plus(paymentAmount.minus(allocatedTotal));
+
+      for (const allocation of payment.allocations) {
+        const invoiceTotal = sum(allocation.invoice.lines.map((l) => l.amount));
+        if (invoiceTotal.lessThanOrEqualTo(0)) continue;
+
+        const applied = money(allocation.amount);
+        for (const line of allocation.invoice.lines) {
+          const share = applied.times(money(line.amount)).dividedBy(invoiceTotal);
+          incomeByKind.set(
+            line.kind,
+            (incomeByKind.get(line.kind) ?? new Decimal(0)).plus(share),
+          );
+        }
+      }
+    }
+
+    const totalIncome = sum(payments.map((p) => p.amount));
+    const totalExpenses = sum(expenses.map((e) => e.amount));
+
+    const expensesByCategory = new Map<string, Decimal>();
+    for (const expense of expenses) {
+      const key = expense.category?.name ?? 'Uncategorised';
+      expensesByCategory.set(
+        key,
+        (expensesByCategory.get(key) ?? new Decimal(0)).plus(money(expense.amount)),
+      );
+    }
+
+    return {
+      from: start,
+      to: end,
+      income: {
+        total: totalIncome.toFixed(2),
+        byKind: Object.fromEntries(
+          [...incomeByKind.entries()].map(([k, v]) => [k, round2(v).toFixed(2)]),
+        ),
+        unattributed: round2(unattributed).toFixed(2),
+        paymentCount: payments.length,
+      },
+      expenses: {
+        total: totalExpenses.toFixed(2),
+        byCategory: [...expensesByCategory.entries()]
+          .map(([name, total]) => ({ name, total: total.toFixed(2) }))
+          .sort((a, b) => Number(b.total) - Number(a.total)),
+        count: expenses.length,
+      },
+      profit: totalIncome.minus(totalExpenses).toFixed(2),
     };
   }
 
@@ -279,8 +378,10 @@ export class ReportsService {
     const start = monthStart(month);
     const end = dayStart(monthEnd(month));
 
-    const [collections, occupancy, movements, eb, summaries] = await Promise.all([
+    const [collections, profitAndLoss, occupancy, movements, eb, summaries] =
+      await Promise.all([
       this.collections(start, end, branchId),
+      this.profitAndLoss(start, end, branchId),
       this.occupancy(start, end, branchId ? [branchId] : branchScope),
       this.movements(start, end, branchId),
       this.ebSummary(start, end, branchId),
@@ -292,6 +393,7 @@ export class ReportsService {
       periodStart: start,
       periodEnd: end,
       collections,
+      profitAndLoss,
       occupancy,
       movements,
       eb,

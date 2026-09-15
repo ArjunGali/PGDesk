@@ -8,6 +8,7 @@ import { UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { PERMISSION_CATALOGUE } from '../../common/permissions';
+import { assertPinFormat } from '../../common/utils/pin';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 @Injectable()
@@ -58,7 +59,7 @@ export class UsersService implements OnModuleInit {
   }
 
   async list() {
-    return this.prisma.user.findMany({
+    const rows = await this.prisma.user.findMany({
       orderBy: { fullName: 'asc' },
       select: {
         id: true,
@@ -70,10 +71,17 @@ export class UsersService implements OnModuleInit {
         isOwner: true,
         lastLoginAt: true,
         createdAt: true,
+        avatarColor: true,
+        avatarPath: true,
+        showOnProfileScreen: true,
+        sortOrder: true,
+        pinHash: true,
         roles: { include: { role: { select: { id: true, key: true, name: true } } } },
         branchScopes: { select: { branchId: true } },
       },
     });
+    // Report whether a PIN exists, never the hash.
+    return rows.map(({ pinHash, ...user }) => ({ ...user, hasPin: pinHash !== null }));
   }
 
   async findOne(id: string) {
@@ -97,25 +105,35 @@ export class UsersService implements OnModuleInit {
     return user;
   }
 
+  /**
+   * Creates a profile for the "Who's using the app?" screen.
+   *
+   * A PIN is optional here: a profile can be created now and the person can
+   * choose their own PIN the first time they tap their name, which avoids the
+   * owner having to invent and then communicate one.
+   */
   async create(input: {
     username: string;
-    password: string;
+    pin?: string;
     fullName: string;
     email?: string;
     mobile?: string;
     roleIds?: string[];
     branchIds?: string[];
+    avatarColor?: string;
+    sortOrder?: number;
   }) {
-    if (input.password.length < 8) {
-      throw new BadRequestException('Password must be at least 8 characters');
-    }
+    if (input.pin) assertPinFormat(input.pin);
+
     return this.prisma.user.create({
       data: {
         username: input.username.trim().toLowerCase(),
-        passwordHash: await bcrypt.hash(input.password, 12),
+        pinHash: input.pin ? await bcrypt.hash(input.pin, 10) : null,
         fullName: input.fullName,
         email: input.email || null,
         mobile: input.mobile || null,
+        avatarColor: input.avatarColor || null,
+        sortOrder: input.sortOrder ?? 0,
         roles: input.roleIds?.length
           ? { create: input.roleIds.map((roleId) => ({ roleId })) }
           : undefined,
@@ -136,7 +154,9 @@ export class UsersService implements OnModuleInit {
       status?: UserStatus;
       roleIds?: string[];
       branchIds?: string[];
-      password?: string;
+      avatarColor?: string;
+      showOnProfileScreen?: boolean;
+      sortOrder?: number;
     },
   ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
@@ -177,9 +197,9 @@ export class UsersService implements OnModuleInit {
           email: input.email,
           mobile: input.mobile,
           status: input.status,
-          passwordHash: input.password
-            ? await bcrypt.hash(input.password, 12)
-            : undefined,
+          avatarColor: input.avatarColor,
+          showOnProfileScreen: input.showOnProfileScreen,
+          sortOrder: input.sortOrder,
         },
         select: { id: true, username: true, fullName: true, status: true },
       });

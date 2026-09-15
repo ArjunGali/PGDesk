@@ -2,11 +2,13 @@ import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { UserStatus } from '@prisma/client';
 import {
   IsArray,
+  IsBoolean,
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
-  MinLength,
+  Matches,
 } from 'class-validator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
@@ -15,24 +17,30 @@ import { PERMISSIONS } from '../../common/permissions';
 import { AuditService } from '../audit/audit.service';
 import { UsersService } from './users.service';
 
-class CreateUserDto {
+class CreateProfileDto {
   @IsString() @IsNotEmpty() username: string;
-  @IsString() @MinLength(8) password: string;
+  /** Optional: leave blank and the person chooses their PIN on first use. */
+  @IsOptional() @Matches(/^\d{4,8}$/, { message: 'A PIN must be 4 to 8 digits' })
+  pin?: string;
   @IsString() @IsNotEmpty() fullName: string;
   @IsOptional() @IsString() email?: string;
   @IsOptional() @IsString() mobile?: string;
   @IsOptional() @IsArray() roleIds?: string[];
   @IsOptional() @IsArray() branchIds?: string[];
+  @IsOptional() @IsString() avatarColor?: string;
+  @IsOptional() @IsInt() sortOrder?: number;
 }
 
-class UpdateUserDto {
+class UpdateProfileDto {
   @IsOptional() @IsString() fullName?: string;
   @IsOptional() @IsString() email?: string;
   @IsOptional() @IsString() mobile?: string;
   @IsOptional() @IsEnum(UserStatus) status?: UserStatus;
   @IsOptional() @IsArray() roleIds?: string[];
   @IsOptional() @IsArray() branchIds?: string[];
-  @IsOptional() @IsString() @MinLength(8) password?: string;
+  @IsOptional() @IsString() avatarColor?: string;
+  @IsOptional() @IsBoolean() showOnProfileScreen?: boolean;
+  @IsOptional() @IsInt() sortOrder?: number;
 }
 
 class CreateRoleDto {
@@ -66,9 +74,9 @@ export class UsersController {
   }
 
   @Post('users')
-  @RequirePermissions(PERMISSIONS.USER_MANAGE)
+  @RequirePermissions(PERMISSIONS.PROFILE_MANAGE)
   async create(
-    @Body() dto: CreateUserDto,
+    @Body() dto: CreateProfileDto,
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     const user = await this.users.create(dto);
@@ -83,10 +91,10 @@ export class UsersController {
   }
 
   @Patch('users/:id')
-  @RequirePermissions(PERMISSIONS.USER_MANAGE)
+  @RequirePermissions(PERMISSIONS.PROFILE_MANAGE)
   async update(
     @Param('id') id: string,
-    @Body() dto: UpdateUserDto,
+    @Body() dto: UpdateProfileDto,
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     const before = await this.users.findOne(id);
@@ -97,7 +105,7 @@ export class UsersController {
       entityType: 'User',
       entityId: id,
       before,
-      after: { ...dto, password: dto.password ? '[changed]' : undefined },
+      after: dto,
     });
     return user;
   }
@@ -115,7 +123,7 @@ export class UsersController {
   }
 
   @Post('roles')
-  @RequirePermissions(PERMISSIONS.USER_MANAGE)
+  @RequirePermissions(PERMISSIONS.PROFILE_MANAGE)
   async createRole(
     @Body() dto: CreateRoleDto,
     @CurrentUser() actor: AuthenticatedUser,
@@ -132,7 +140,7 @@ export class UsersController {
   }
 
   @Patch('roles/:id/permissions')
-  @RequirePermissions(PERMISSIONS.USER_MANAGE)
+  @RequirePermissions(PERMISSIONS.PROFILE_MANAGE)
   async updateRolePermissions(
     @Param('id') id: string,
     @Body() dto: UpdateRolePermissionsDto,

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -7,7 +8,10 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { PaymentMethod } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
@@ -117,6 +121,31 @@ export class ExpensesController {
       entityType: 'Expense',
       entityId: id,
       after: dto,
+    });
+    return expense;
+  }
+
+  /** Attaches a receipt or bill photo to an expense. */
+  @Post(':id/receipt')
+  @RequirePermissions(PERMISSIONS.EXPENSE_MANAGE)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 15 * 1024 * 1024 } }))
+  async uploadReceipt(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    if (!file) throw new BadRequestException('No file was received');
+    const expense = await this.expenses.attachReceipt(
+      id,
+      { fileName: file.originalname, mimeType: file.mimetype, buffer: file.buffer },
+      user.id,
+    );
+    await this.audit.record({
+      actorId: user.id,
+      action: 'expense.receipt_upload',
+      entityType: 'Expense',
+      entityId: id,
+      after: { fileName: file.originalname, sizeBytes: file.size },
     });
     return expense;
   }

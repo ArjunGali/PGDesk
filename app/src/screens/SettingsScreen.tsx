@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { CheckIcon, PlusIcon, SettingsIcon } from '@/components/Icons';
 import {
   Card,
@@ -608,6 +609,8 @@ function AddPriceSheet({
 
 function ServerTab() {
   const user = useAuthStore((s) => s.user);
+  const navigate = useNavigate();
+  const [changePinOpen, setChangePinOpen] = useState(false);
   const theme = useUiStore((s) => s.theme);
   const setTheme = useUiStore((s) => s.setTheme);
   const toast = useUiStore((s) => s.toast);
@@ -684,19 +687,126 @@ function ServerTab() {
         </Card>
       </Section>
 
-      <Section title="Signed in as">
+      <Section title="Data retention">
+        <Card className="p-4">
+          <p className="text-sm text-ink-muted mb-3">
+            Export a former tenant&rsquo;s full record, then erase their personal
+            data. Bills, payments and the audit trail are always kept.
+          </p>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => navigate('/past-tenants')}
+          >
+            Past tenants
+          </button>
+        </Card>
+      </Section>
+
+      <Section title="Your profile">
         <Card className="p-4">
           <dl>
             <Field label="Name" value={user?.fullName} />
-            <Field label="Username" value={user?.username} />
             <Field label="Role" value={user?.isOwner ? 'Owner (full access)' : 'Staff'} />
             <Field
               label="Permissions"
               value={user?.isOwner ? 'All' : `${user?.permissions.length ?? 0} granted`}
             />
           </dl>
+          <button
+            type="button"
+            className="btn-secondary mt-4"
+            onClick={() => setChangePinOpen(true)}
+          >
+            Change PIN
+          </button>
         </Card>
       </Section>
+
+      <ChangePinSheet open={changePinOpen} onClose={() => setChangePinOpen(false)} />
     </>
+  );
+}
+
+/** Changing your own PIN. The current one is required, and it signs you out elsewhere. */
+function ChangePinSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const toast = useUiStore((s) => s.toast);
+  const [currentPin, setCurrentPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: () => api.post('/auth/change-pin', { currentPin, newPin }),
+    onSuccess: () => {
+      toast('PIN changed. Other devices have been signed out.', 'success');
+      setCurrentPin('');
+      setNewPin('');
+      setConfirmPin('');
+      onClose();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : 'Could not change the PIN'),
+  });
+
+  const mismatch = confirmPin.length > 0 && newPin !== confirmPin;
+
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title="Change PIN"
+      footer={
+        <>
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={
+              currentPin.length < 4 || newPin.length < 4 || mismatch || save.isPending
+            }
+            onClick={() => {
+              setError(null);
+              save.mutate();
+            }}
+          >
+            {save.isPending ? 'Saving…' : 'Change PIN'}
+          </button>
+        </>
+      }
+    >
+      <FormRow label="Current PIN">
+        <input
+          className="input tabular tracking-[0.4em]"
+          inputMode="numeric"
+          type="password"
+          maxLength={8}
+          value={currentPin}
+          onChange={(e) => setCurrentPin(e.target.value.replace(/\D/g, ''))}
+        />
+      </FormRow>
+      <FormRow label="New PIN" hint="4 to 8 digits. Avoid 1234 or a repeated digit.">
+        <input
+          className="input tabular tracking-[0.4em]"
+          inputMode="numeric"
+          type="password"
+          maxLength={8}
+          value={newPin}
+          onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ''))}
+        />
+      </FormRow>
+      <FormRow label="Confirm new PIN" error={mismatch ? 'Those PINs do not match' : undefined}>
+        <input
+          className="input tabular tracking-[0.4em]"
+          inputMode="numeric"
+          type="password"
+          maxLength={8}
+          value={confirmPin}
+          onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, ''))}
+        />
+      </FormRow>
+      {error && <p className="text-sm text-critical">{error}</p>}
+    </Sheet>
   );
 }
