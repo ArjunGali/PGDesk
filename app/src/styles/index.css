@@ -1,0 +1,159 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * Two deliberate palettes.
+ *
+ * Dark is the primary style: charcoal black, graphite, cement and concrete
+ * greys with soft white text — architectural and calm, never pure white on
+ * pure black. Light is a separate high-contrast palette that keeps the same
+ * visual hierarchy rather than inverting the dark one.
+ */
+@layer base {
+  :root {
+    /* Light theme */
+    --base: 244 244 242;
+    --surface: 255 255 255;
+    --surface-raised: 255 255 255;
+    --surface-sunken: 237 237 234;
+    --line: 220 220 215;
+    --line-strong: 198 198 192;
+    --ink: 26 28 29;
+    --ink-muted: 98 105 109;
+    --ink-faint: 143 149 152;
+    --accent: 138 104 40;
+    --accent-soft: 236 227 208;
+    --accent-ink: 255 255 255;
+    --positive: 62 116 82;
+    --caution: 155 108 32;
+    --critical: 158 62 54;
+    --glass: 255 255 255;
+    --glass-alpha: 0.72;
+
+    color-scheme: light;
+  }
+
+  .dark {
+    /* Dark theme — the primary look */
+    --base: 14 15 16;
+    --surface: 22 24 25;
+    --surface-raised: 30 33 34;
+    --surface-sunken: 18 19 20;
+    --line: 42 46 48;
+    --line-strong: 60 65 68;
+    --ink: 232 233 233;
+    --ink-muted: 150 157 161;
+    --ink-faint: 110 117 121;
+    --accent: 198 161 91;
+    --accent-soft: 46 40 28;
+    --accent-ink: 20 17 10;
+    --positive: 122 158 132;
+    --caution: 194 146 90;
+    --critical: 190 112 104;
+    --glass: 18 20 21;
+    --glass-alpha: 0.78;
+
+    color-scheme: dark;
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-base text-ink font-sans antialiased;
+    /* Respect the notch and the gesture bar on Android. */
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    overscroll-behavior-y: none;
+  }
+
+  /* Native-feeling focus that is still clearly visible. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent/70 ring-offset-2 ring-offset-base;
+  }
+
+  /* Numbers line up in columns — money is read down a page, not across. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+}
+
+@layer components {
+  /**
+   * Frosted glass. Used sparingly: the top bar, the drawer, dialogs and the
+   * floating calculator. Cards stay solid so the screen does not become soup.
+   */
+  .glass {
+    background-color: rgb(var(--glass) / var(--glass-alpha));
+    @apply backdrop-blur-glass border-line;
+  }
+
+  .card {
+    @apply bg-surface border border-line rounded-card;
+  }
+
+  .field-label {
+    @apply block text-xs font-medium uppercase tracking-wider text-ink-muted mb-1.5;
+  }
+
+  .input {
+    @apply w-full min-h-touch bg-surface-sunken border border-line rounded-lg px-3.5 py-2.5
+           text-base text-ink placeholder:text-ink-faint
+           focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 min-h-touch px-4 rounded-lg
+           text-base font-medium transition-colors select-none
+           disabled:opacity-45 disabled:pointer-events-none;
+  }
+
+  .btn-primary {
+    @apply btn bg-accent text-accent-ink hover:brightness-110 active:brightness-95;
+  }
+
+  .btn-secondary {
+    @apply btn bg-surface-raised text-ink border border-line hover:border-line-strong;
+  }
+
+  .btn-ghost {
+    @apply btn text-ink-muted hover:text-ink hover:bg-surface-raised;
+  }
+
+  .btn-danger {
+    @apply btn bg-critical text-white hover:brightness-110;
+  }
+
+  /* Small status indicators — typography and a dot, never a giant colour block. */
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full
+           text-xs font-medium border border-line bg-surface-raised text-ink-muted;
+  }
+
+  .stat-label {
+    @apply text-xs uppercase tracking-wider text-ink-muted;
+  }
+
+  .stat-value {
+    @apply text-xl font-semibold tabular text-ink;
+  }
+}
+
+/* The scrollbar should read as part of the surface, not a browser artefact. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--line-strong));
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}

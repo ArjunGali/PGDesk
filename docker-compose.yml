@@ -33,7 +33,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-too-in-production}
       STORAGE_ROOT: /data/storage
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,capacitor://localhost,http://localhost}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,capacitor://localhost,http://localhost,https://localhost}
     ports:
       - "${BACKEND_PORT:-3000}:3000"
     volumes:
