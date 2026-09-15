@@ -1,0 +1,922 @@
+// PG Management — PostgreSQL schema
+//
+// Design rules encoded here (see docs/ARCHITECTURE.md):
+//  * Business configuration lives in AppSetting, never in code.
+//  * Financial history is immutable: bills/charges snapshot the rates and
+//    amounts that applied when they were generated. Changing configuration
+//    today never rewrites yesterday's money.
+//  * Tenant (identity) and Stay (a residence period) are separate.
+//  * Occupancy is bed-level and effective-dated; nothing is ever overwritten.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+enum SettingType {
+  STRING
+  NUMBER
+  MONEY
+  INTEGER
+  BOOLEAN
+  JSON
+}
+
+/// Every tunable business value. Nothing in this table may be hardcoded in
+/// application logic: rent defaults, EB rate, common charge, food difference,
+/// notice period days, etc. all resolve through the settings service.
+model AppSetting {
+  id          String      @id @default(uuid())
+  key         String      @unique
+  value       String
+  type        SettingType @default(STRING)
+  group       String      @default("general")
+  label       String
+  description String?
+  /// Settings the UI must not let the user delete (the app depends on them).
+  isSystem    Boolean     @default(false)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  history AppSettingHistory[]
+
+  @@index([group])
+}
+
+/// Audit trail for configuration. Lets a bill from March be explained with the
+/// rates that were in force in March.
+model AppSettingHistory {
+  id          String   @id @default(uuid())
+  settingId   String
+  setting     AppSetting @relation(fields: [settingId], references: [id], onDelete: Cascade)
+  key         String
+  oldValue    String?
+  newValue    String
+  effectiveAt DateTime @default(now())
+  reason      String?
+  changedById String?
+  changedBy   User?    @relation(fields: [changedById], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@index([key, effectiveAt])
+}
+
+// ---------------------------------------------------------------------------
+// Identity, roles and permissions
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+model User {
+  id           String     @id @default(uuid())
+  username     String     @unique
+  email        String?    @unique
+  fullName     String
+  mobile       String?
+  passwordHash String
+  status       UserStatus @default(ACTIVE)
+  lastLoginAt  DateTime?
+  /// Bypasses permission checks. There is always at least one owner account.
+  isOwner      Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  roles           UserRole[]
+  branchScopes    UserBranchScope[]
+  auditLogs       AuditLog[]
+  settingChanges  AppSettingHistory[]
+  refreshTokens   RefreshToken[]
+  notifications   Notification[]      @relation("NotificationUser")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Role {
+  id          String  @id @default(uuid())
+  key         String  @unique
+  name        String
+  description String?
+  isSystem    Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id          String  @id @default(uuid())
+  key         String  @unique
+  group       String
+  description String
+
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model UserRole {
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId String
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+/// Restricts a user to specific branches. No rows means all branches.
+model UserBranchScope {
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branchId String
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([userId, branchId])
+}
+
+// ---------------------------------------------------------------------------
+// Property structure: Branch -> Floor -> Room -> Bed
+// ---------------------------------------------------------------------------
+
+enum BranchStatus {
+  ACTIVE
+  DISABLED
+  ARCHIVED
+}
+
+model Branch {
+  id          String       @id @default(uuid())
+  name        String       @unique
+  code        String?      @unique
+  address     String?
+  contact     String?
+  description String?
+  status      BranchStatus @default(ACTIVE)
+  sortOrder   Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  floors       Floor[]
+  pricingRules PricingRule[]
+  expenses     Expense[]
+  userScopes   UserBranchScope[]
+}
+
+/// Floor "types" (Ground/First/Terrace/Basement/...) are configuration, not an
+/// enum, so a branch can add whatever it actually has.
+model FloorType {
+  id        String  @id @default(uuid())
+  key       String  @unique
+  name      String
+  sortOrder Int     @default(0)
+  isSystem  Boolean @default(false)
+
+  floors Floor[]
+}
+
+model Floor {
+  id          String  @id @default(uuid())
+  branchId    String
+  branch      Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  floorTypeId String?
+  floorType   FloorType? @relation(fields: [floorTypeId], references: [id])
+  name        String
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rooms Room[]
+
+  @@unique([branchId, name])
+  @@index([branchId])
+}
+
+enum AcType {
+  AC
+  NON_AC
+}
+
+model Room {
+  id        String  @id @default(uuid())
+  floorId   String
+  floor     Floor   @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  name      String
+  /// Sharing size: 1 sharing, 3 sharing, 6 sharing ... Beds are created to match.
+  capacity  Int
+  acType    AcType  @default(AC)
+  /// "2 Sharing Big Room" style variants price differently from the plain size.
+  variant   String?
+  notes     String?
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  beds         Bed[]
+  pricingRules PricingRule[]
+  ebMeters     EbMeter[]
+
+  @@unique([floorId, name])
+  @@index([floorId])
+}
+
+model Bed {
+  id        String  @id @default(uuid())
+  roomId    String
+  room      Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  label     String
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assignments BedAssignment[]
+
+  @@unique([roomId, label])
+  @@index([roomId])
+}
+
+// ---------------------------------------------------------------------------
+// Pricing — most specific applicable rule wins, and every rule is dated.
+// ---------------------------------------------------------------------------
+
+enum PricingScope {
+  GLOBAL
+  BRANCH
+  SHARING
+  ROOM
+  STAY
+}
+
+model PricingRule {
+  id            String       @id @default(uuid())
+  scope         PricingScope
+  branchId      String?
+  branch        Branch?      @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  roomId        String?
+  room          Room?        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  stayId        String?
+  stay          Stay?        @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  /// For SHARING / BRANCH scope matching.
+  capacity      Int?
+  acType        AcType?
+  variant       String?
+  /// Monthly rent WITH food. The no-food price is derived by subtracting the
+  /// configured food difference so one number stays the source of truth.
+  amountWithFood Decimal     @db.Decimal(12, 2)
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  reason        String?
+  createdById   String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([scope, branchId, capacity, acType])
+  @@index([roomId])
+  @@index([stayId])
+}
+
+// ---------------------------------------------------------------------------
+// Tenants and stays
+// ---------------------------------------------------------------------------
+
+model Tenant {
+  id               String   @id @default(uuid())
+  fullName         String
+  mobile           String?
+  emergencyContact String?
+  emergencyName    String?
+  permanentAddress String?
+  officeAddress    String?
+  officeName       String?
+  photoDocumentId  String?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  /// Soft delete. Tenant data is only removed through the export+erase flow.
+  archivedAt       DateTime?
+
+  stays             Stay[]
+  documents         Document[]
+  customFieldValues CustomFieldValue[]
+  notifications     Notification[]
+
+  @@index([fullName])
+  @@index([mobile])
+}
+
+enum StayType {
+  MONTHLY
+  DAILY
+}
+
+enum StayStatus {
+  ACTIVE
+  NOTICE_GIVEN
+  VACATED
+  CANCELLED
+}
+
+model Stay {
+  id                  String     @id @default(uuid())
+  tenantId            String
+  tenant              Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  stayType            StayType   @default(MONTHLY)
+  status              StayStatus @default(ACTIVE)
+  checkInDate         DateTime
+  expectedCheckoutDate DateTime?
+  actualCheckoutDate  DateTime?
+  /// Daily stays are billed per day and may never carry food.
+  plannedDays         Int?
+  /// Agreed deposit for this stay (what was promised, not what was paid).
+  depositAmount       Decimal    @db.Decimal(12, 2) @default(0)
+  notes               String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  assignments   BedAssignment[]
+  foodPeriods   FoodPeriod[]
+  pricingRules  PricingRule[]
+  invoices      Invoice[]
+  payments      Payment[]
+  depositLedger DepositEntry[]
+  ebCharges     EbCharge[]
+  notice        VacateNotice?
+  settlement    Settlement?
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+enum AssignmentEndReason {
+  ROOM_SWITCH
+  ROOM_SWAP
+  VACATED
+  CORRECTION
+}
+
+/// Room history. A stay may move between beds, floors and branches; each move
+/// closes the previous row and opens a new one. Rows are never overwritten.
+model BedAssignment {
+  id          String    @id @default(uuid())
+  stayId      String
+  stay        Stay      @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  bedId       String
+  bed         Bed       @relation(fields: [bedId], references: [id], onDelete: Restrict)
+  startDate   DateTime
+  /// NULL means currently occupying this bed.
+  endDate     DateTime?
+  endReason   AssignmentEndReason?
+  reason      String?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([bedId, startDate, endDate])
+  @@index([stayId])
+}
+
+/// Effective-dated food status. Billing asks "was food on for this window?",
+/// so switching food off in October leaves September's bill untouched.
+model FoodPeriod {
+  id            String   @id @default(uuid())
+  stayId        String
+  stay          Stay     @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  foodIncluded  Boolean
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  reason        String?
+  changedById   String?
+  createdAt     DateTime @default(now())
+
+  @@index([stayId, effectiveFrom])
+}
+
+// ---------------------------------------------------------------------------
+// Custom tenant fields — new fields without a migration.
+// ---------------------------------------------------------------------------
+
+enum CustomFieldType {
+  TEXT
+  NUMBER
+  DATE
+  BOOLEAN
+  SELECT
+  PHONE
+}
+
+model CustomFieldDefinition {
+  id          String          @id @default(uuid())
+  key         String          @unique
+  label       String
+  type        CustomFieldType @default(TEXT)
+  /// JSON array of options for SELECT fields.
+  options     String?
+  required    Boolean         @default(false)
+  /// Counts toward the "incomplete profile" check when required.
+  sortOrder   Int             @default(0)
+  isActive    Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  values CustomFieldValue[]
+}
+
+model CustomFieldValue {
+  id           String @id @default(uuid())
+  definitionId String
+  definition   CustomFieldDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  tenantId     String
+  tenant       Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  value        String
+  updatedAt    DateTime @updatedAt
+
+  @@unique([definitionId, tenantId])
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------------
+// Documents
+// ---------------------------------------------------------------------------
+
+enum DocumentVerification {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+model DocumentType {
+  id          String  @id @default(uuid())
+  key         String  @unique
+  name        String
+  /// Required documents drive the incomplete-profile notification.
+  required    Boolean @default(false)
+  sortOrder   Int     @default(0)
+  isActive    Boolean @default(true)
+
+  documents Document[]
+}
+
+model Document {
+  id             String   @id @default(uuid())
+  tenantId       String
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  documentTypeId String
+  documentType   DocumentType @relation(fields: [documentTypeId], references: [id])
+  /// Relative path inside the configured storage root; never a public URL.
+  storagePath    String
+  fileName       String
+  mimeType       String
+  sizeBytes      Int
+  uploadedById   String?
+  uploadedAt     DateTime @default(now())
+  verification   DocumentVerification @default(PENDING)
+  verifiedById   String?
+  verifiedAt     DateTime?
+  notes          String?
+
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------------
+// Billing
+// ---------------------------------------------------------------------------
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
+enum ChargeKind {
+  RENT
+  FOOD
+  COMMON
+  EB
+  DEPOSIT
+  NOTICE_PERIOD
+  ADJUSTMENT
+  OTHER
+}
+
+/// A month's (or a daily stay's) bill. Once ISSUED the lines are frozen:
+/// corrections are made by adding an adjustment line, never by editing.
+model Invoice {
+  id           String        @id @default(uuid())
+  number       String        @unique
+  stayId       String
+  stay         Stay          @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  periodStart  DateTime
+  periodEnd    DateTime
+  dueDate      DateTime
+  status       InvoiceStatus @default(DRAFT)
+  /// Sum of lines; stored so history survives any later code change.
+  totalAmount  Decimal       @db.Decimal(12, 2) @default(0)
+  paidAmount   Decimal       @db.Decimal(12, 2) @default(0)
+  notes        String?
+  issuedAt     DateTime?
+  cancelledAt  DateTime?
+  cancelReason String?
+  createdById  String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  lines       InvoiceLine[]
+  allocations PaymentAllocation[]
+
+  @@unique([stayId, periodStart, periodEnd])
+  @@index([status, dueDate])
+}
+
+model InvoiceLine {
+  id          String     @id @default(uuid())
+  invoiceId   String
+  invoice     Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  kind        ChargeKind
+  description String
+  quantity    Decimal    @db.Decimal(12, 3) @default(1)
+  unitAmount  Decimal    @db.Decimal(12, 2)
+  amount      Decimal    @db.Decimal(12, 2)
+  /// JSON snapshot of the inputs (rate, days, readings) used for this line, so
+  /// an old bill can always be explained.
+  calcSnapshot String?
+  sourceId    String?
+  createdAt   DateTime   @default(now())
+
+  @@index([invoiceId])
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CARD
+  CHEQUE
+  OTHER
+}
+
+model Payment {
+  id          String        @id @default(uuid())
+  receiptNo   String        @unique
+  stayId      String
+  stay        Stay          @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  amount      Decimal       @db.Decimal(12, 2)
+  method      PaymentMethod @default(CASH)
+  paidAt      DateTime
+  reference   String?
+  notes       String?
+  /// Reversals keep the original row and add a linked reversing row.
+  reversedAt  DateTime?
+  reversalOfId String?
+  receivedById String?
+  createdAt   DateTime      @default(now())
+
+  allocations PaymentAllocation[]
+
+  @@index([stayId, paidAt])
+}
+
+/// Money is applied to specific invoices so "what is this tenant's balance?"
+/// is always answerable from records rather than a running mutable number.
+model PaymentAllocation {
+  id        String  @id @default(uuid())
+  paymentId String
+  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  amount    Decimal @db.Decimal(12, 2)
+  createdAt DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([paymentId])
+}
+
+// ---------------------------------------------------------------------------
+// Deposits
+// ---------------------------------------------------------------------------
+
+enum DepositEntryType {
+  COLLECTED
+  REFUNDED
+  ADJUSTED_AGAINST_DUES
+  FORFEITED
+  CORRECTION
+}
+
+enum DepositStatus {
+  NONE
+  HELD
+  REFUND_PENDING
+  PARTIALLY_REFUNDED
+  FULLY_REFUNDED
+  ADJUSTED_AGAINST_DUES
+}
+
+/// Append-only deposit ledger. The held balance is the sum of its entries.
+model DepositEntry {
+  id          String           @id @default(uuid())
+  stayId      String
+  stay        Stay             @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  type        DepositEntryType
+  /// Positive increases the held deposit, negative releases it.
+  amount      Decimal          @db.Decimal(12, 2)
+  method      PaymentMethod?
+  occurredAt  DateTime
+  reason      String?
+  notes       String?
+  createdById String?
+  createdAt   DateTime         @default(now())
+
+  @@index([stayId, occurredAt])
+}
+
+// ---------------------------------------------------------------------------
+// Vacating and settlement
+// ---------------------------------------------------------------------------
+
+model VacateNotice {
+  id                 String   @id @default(uuid())
+  stayId             String   @unique
+  stay               Stay     @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  noticeDate         DateTime
+  /// noticeDate + the notice-period setting in force on noticeDate (snapshotted).
+  requiredUntilDate  DateTime
+  noticeDaysRequired Int
+  intendedCheckout   DateTime
+  shortfallDays      Int      @default(0)
+  reason             String?
+  createdById        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+enum SettlementStatus {
+  DRAFT
+  FINALISED
+  CANCELLED
+}
+
+model Settlement {
+  id            String           @id @default(uuid())
+  stayId        String           @unique
+  stay          Stay             @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  status        SettlementStatus @default(DRAFT)
+  checkoutDate  DateTime
+  depositHeld   Decimal          @db.Decimal(12, 2) @default(0)
+  totalDeductions Decimal        @db.Decimal(12, 2) @default(0)
+  /// Positive: refund due to tenant. Negative: tenant owes the PG.
+  netAmount     Decimal          @db.Decimal(12, 2) @default(0)
+  depositStatus DepositStatus    @default(REFUND_PENDING)
+  notes         String?
+  finalisedAt   DateTime?
+  finalisedById String?
+  createdById   String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  lines SettlementLine[]
+}
+
+model SettlementLine {
+  id           String     @id @default(uuid())
+  settlementId String
+  settlement   Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  kind         ChargeKind
+  description  String
+  amount       Decimal    @db.Decimal(12, 2)
+  /// Manual changes are never silent: reason and user are mandatory upstream.
+  isManual     Boolean    @default(false)
+  reason       String?
+  createdById  String?
+  calcSnapshot String?
+  createdAt    DateTime   @default(now())
+
+  @@index([settlementId])
+}
+
+// ---------------------------------------------------------------------------
+// Electricity (E.B.)
+// ---------------------------------------------------------------------------
+
+/// A meter serves one room (the common case) or a whole floor/branch when the
+/// property is wired that way.
+model EbMeter {
+  id          String   @id @default(uuid())
+  roomId      String?
+  room        Room?    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  name        String
+  serialNo    String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  readings EbReading[]
+  cycles   EbCycle[]
+
+  @@index([roomId])
+}
+
+model EbReading {
+  id          String   @id @default(uuid())
+  meterId     String
+  meter       EbMeter  @relation(fields: [meterId], references: [id], onDelete: Cascade)
+  readingDate DateTime
+  /// Meter face value. Rollovers/replacements are handled by the algorithm.
+  value       Decimal  @db.Decimal(12, 2)
+  /// True when the meter was replaced/reset before this reading.
+  isReset     Boolean  @default(false)
+  photoPath   String?
+  notes       String?
+  recordedById String?
+  createdAt   DateTime @default(now())
+
+  cyclesAsStart EbCycle[] @relation("CycleStartReading")
+  cyclesAsEnd   EbCycle[] @relation("CycleEndReading")
+
+  @@unique([meterId, readingDate])
+  @@index([meterId, readingDate])
+}
+
+enum EbCycleStatus {
+  DRAFT
+  FINALISED
+  CANCELLED
+}
+
+/// One billing period for one meter. The rate is snapshotted at finalisation so
+/// a later rate change cannot alter a past cycle.
+model EbCycle {
+  id             String        @id @default(uuid())
+  meterId        String
+  meter          EbMeter       @relation(fields: [meterId], references: [id], onDelete: Cascade)
+  periodStart    DateTime
+  periodEnd      DateTime
+  startReadingId String?
+  startReading   EbReading?    @relation("CycleStartReading", fields: [startReadingId], references: [id])
+  endReadingId   String?
+  endReading     EbReading?    @relation("CycleEndReading", fields: [endReadingId], references: [id])
+  unitsConsumed  Decimal       @db.Decimal(12, 2) @default(0)
+  ratePerUnit    Decimal       @db.Decimal(12, 4)
+  totalAmount    Decimal       @db.Decimal(12, 2) @default(0)
+  status         EbCycleStatus @default(DRAFT)
+  /// JSON snapshot of the full split computation.
+  calcSnapshot   String?
+  notes          String?
+  finalisedAt    DateTime?
+  createdById    String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  charges EbCharge[]
+
+  @@unique([meterId, periodStart, periodEnd])
+  @@index([status])
+}
+
+/// One tenant's share of one cycle, weighted by the days they occupied a bed
+/// in that room during the period.
+model EbCharge {
+  id           String   @id @default(uuid())
+  cycleId      String
+  cycle        EbCycle  @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  stayId       String
+  stay         Stay     @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  occupiedDays Int
+  shareRatio   Decimal  @db.Decimal(9, 6)
+  units        Decimal  @db.Decimal(12, 2)
+  amount       Decimal  @db.Decimal(12, 2)
+  invoiceLineId String?
+  createdAt    DateTime @default(now())
+
+  @@unique([cycleId, stayId])
+  @@index([stayId])
+}
+
+// ---------------------------------------------------------------------------
+// Expenses
+// ---------------------------------------------------------------------------
+
+model ExpenseCategory {
+  id        String  @id @default(uuid())
+  key       String  @unique
+  name      String
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  expenses Expense[]
+}
+
+model Expense {
+  id          String   @id @default(uuid())
+  branchId    String?
+  branch      Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  categoryId  String?
+  category    ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  title       String
+  amount      Decimal  @db.Decimal(12, 2)
+  spentAt     DateTime
+  paidTo      String?
+  method      PaymentMethod @default(CASH)
+  notes       String?
+  attachmentPath String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([branchId, spentAt])
+}
+
+// ---------------------------------------------------------------------------
+// Notifications and audit
+// ---------------------------------------------------------------------------
+
+enum NotificationKind {
+  PAYMENT_PENDING
+  INCOMPLETE_PROFILE
+  UPCOMING_CHECKOUT
+  NOTICE_EXPIRING
+  EB_READING_DUE
+  DEPOSIT_REFUND_PENDING
+  SYSTEM
+}
+
+enum NotificationSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+model Notification {
+  id         String   @id @default(uuid())
+  kind       NotificationKind
+  severity   NotificationSeverity @default(INFO)
+  title      String
+  body       String?
+  /// Stable key so a recurring condition updates one row instead of spamming.
+  dedupeKey  String   @unique
+  tenantId   String?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  stayId     String?
+  branchId   String?
+  /// Deep-link target for the app (route + params as JSON).
+  actionPath String?
+  userId     String?
+  user       User?    @relation("NotificationUser", fields: [userId], references: [id], onDelete: Cascade)
+  readAt     DateTime?
+  resolvedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([kind, resolvedAt])
+  @@index([readAt])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  /// JSON before/after. Financial and permission changes always land here.
+  before     String?
+  after      String?
+  reason     String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+}

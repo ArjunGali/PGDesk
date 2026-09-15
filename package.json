@@ -1,0 +1,25 @@
+{
+  "name": "pg-management",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PG Management — Android app (React + Capacitor) with a NestJS + PostgreSQL backend",
+  "workspaces": [
+    "backend",
+    "app"
+  ],
+  "scripts": {
+    "dev:db": "docker compose up -d postgres",
+    "dev:backend": "npm run start:dev --workspace backend",
+    "dev:app": "npm run dev --workspace app",
+    "build": "npm run build --workspace backend && npm run build --workspace app",
+    "typecheck": "npm run typecheck --workspace backend && npm run typecheck --workspace app",
+    "test": "npm run test --workspace backend",
+    "db:migrate": "npm run db:migrate --workspace backend",
+    "db:seed": "npm run db:seed --workspace backend",
+    "android:sync": "npm run android:sync --workspace app",
+    "android:build": "npm run android:build --workspace app"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

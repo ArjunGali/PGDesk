@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+*.swp
+
+# Testing
+coverage/
+.nyc_output/
+
+# Capacitor / Android
+app/android/
+app/ios/
+app/dist/
+*.keystore
+!debug.keystore
+local.properties
+.gradle/
+
+# Runtime storage (uploaded documents, generated exports, backups)
+storage/
+backend/storage/
+backend/uploads/
+
+# Prisma
+backend/prisma/*.db
+backend/prisma/*.db-journal

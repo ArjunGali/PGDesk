@@ -1,0 +1,44 @@
+# Local / self-hosted stack. Everything here is open source and free to run on
+# the owner's own machine or LAN server — no paid cloud service is required.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pgm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pgm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pgm_password}
+      POSTGRES_DB: ${POSTGRES_DB:-pg_management}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgm-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pgm} -d ${POSTGRES_DB:-pg_management}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    container_name: pgm-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pgm}:${POSTGRES_PASSWORD:-pgm_password}@postgres:5432/${POSTGRES_DB:-pg_management}?schema=public
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-too-in-production}
+      STORAGE_ROOT: /data/storage
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,capacitor://localhost,http://localhost}
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    volumes:
+      - pgm-storage:/data/storage
+
+volumes:
+  pgm-data:
+  pgm-storage:
