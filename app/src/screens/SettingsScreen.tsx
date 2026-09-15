@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CheckIcon, PlusIcon, SettingsIcon } from '@/components/Icons';
 import {
   Card,
@@ -161,10 +161,17 @@ function formatSettingValue(setting: Setting): string {
       const parsed: unknown = JSON.parse(setting.value);
       if (Array.isArray(parsed)) return `${parsed.length} field(s)`;
     } catch {
-      /* show raw below */
+      /* fall through and show the raw value */
     }
   }
+  // Enum-style settings are stored as ACTUAL_DAYS but should read as words.
+  if (setting.options) return humanise(setting.value);
   return setting.value;
+}
+
+function humanise(value: string): string {
+  const words = value.toLowerCase().split('_');
+  return words.map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w)).join(' ');
 }
 
 function EditSettingSheet({
@@ -261,7 +268,7 @@ function EditSettingSheet({
               >
                 {setting.options.map((option) => (
                   <option key={option} value={option}>
-                    {option.replace(/_/g, ' ')}
+                    {humanise(option)}
                   </option>
                 ))}
               </select>
@@ -605,7 +612,6 @@ function ServerTab() {
   const setTheme = useUiStore((s) => s.setTheme);
   const toast = useUiStore((s) => s.toast);
   const [url, setUrl] = useState('');
-  const [loaded, setLoaded] = useState(false);
 
   const { data: health } = useQuery({
     queryKey: ['health'],
@@ -613,12 +619,17 @@ function ServerTab() {
     refetchInterval: 60_000,
   });
 
-  if (!loaded) {
+  // Reading stored preferences is async, so it belongs in an effect rather
+  // than in render.
+  useEffect(() => {
+    let cancelled = false;
     void getBaseUrl().then((value) => {
-      setUrl(value);
-      setLoaded(true);
+      if (!cancelled) setUrl(value);
     });
-  }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <>
