@@ -2,9 +2,11 @@ import { ConfigModule } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { PrismaClient } from '@prisma/client';
 import { execSync } from 'node:child_process';
+import { CryptoModule } from '../common/crypto/crypto.module';
 import { PrismaModule } from '../common/prisma/prisma.module';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { AuditModule } from '../modules/audit/audit.module';
+import { AuthModule } from '../modules/auth/auth.module';
 import { BillingModule } from '../modules/billing/billing.module';
 import { PaymentsModule } from '../modules/payments/payments.module';
 import { PricingModule } from '../modules/pricing/pricing.module';
@@ -37,6 +39,12 @@ export function testDatabaseUrl(): string {
 
 export async function setUpTestDatabase(): Promise<void> {
   process.env.DATABASE_URL = testDatabaseUrl();
+  // A throwaway key, so encryption is exercised rather than skipped. Real
+  // deployments supply their own; nothing here is a usable secret.
+  process.env.AADHAAR_ENCRYPTION_KEY ??=
+    'dGVzdC1vbmx5LWtleS0zMi1ieXRlcy1sb25nLXh4eHg=';
+  // Same idea for token signing: the auth module refuses to build without it.
+  process.env.JWT_SECRET ??= 'test-only-jwt-secret-not-used-anywhere-real';
   // `db push` builds the schema straight from schema.prisma, which is faster
   // than replaying every migration and is equivalent for a fresh schema.
   execSync('npx prisma db push --skip-generate --accept-data-loss', {
@@ -65,7 +73,9 @@ export async function createTestModule(): Promise<TestingModule> {
       // PrismaModule is @Global; importing it is what makes PrismaService
       // injectable across every other module here.
       PrismaModule,
+      CryptoModule,
       AuditModule,
+      AuthModule,
       SettingsModule,
       PropertyModule,
       PricingModule,

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android blocks plaintext HTTP by default. A self-hosted backend on the
+  property's own LAN usually has no TLS certificate, so the specific hosts it
+  runs on have to be allowed by name.
+
+  This is deliberately a list of hosts rather than
+  android:usesCleartextTraffic="true", which would switch the protection off
+  for every destination the app could ever reach.
+
+  EDIT THIS FILE to match your server, then run:  npm run android:configure
+
+  If you put the backend behind TLS — a reverse proxy with a certificate, or a
+  tunnel — delete the domain entries and nothing else needs to change.
+-->
+<network-security-config>
+    <!-- Everything not listed below keeps Android's default: HTTPS only. -->
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- The Android emulator's alias for the development machine. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+
+        <!-- The device itself, for a locally bundled dev server. -->
+        <domain includeSubdomains="false">localhost</domain>
+
+        <!-- REPLACE with your server's LAN address, for example:
+             <domain includeSubdomains="false">192.168.1.20</domain>
+        -->
+    </domain-config>
+</network-security-config>

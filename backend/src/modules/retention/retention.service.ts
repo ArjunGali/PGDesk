@@ -234,7 +234,11 @@ export class RetentionService {
           permanentAddress: null,
           officeAddress: null,
           officeName: null,
-          aadhaarNumber: null,
+          // All three Aadhaar columns go: the ciphertext, the search index
+          // that could confirm a guess, and the last four digits.
+          aadhaarCiphertext: null,
+          aadhaarIndex: null,
+          aadhaarLast4: null,
           photoDocumentId: null,
           notes: null,
           archivedAt: new Date(),

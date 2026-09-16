@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
+import { CryptoModule } from './common/crypto/crypto.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
@@ -34,6 +35,7 @@ import { UsersModule } from './modules/users/users.module';
     ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env', '../.env'] }),
     ScheduleModule.forRoot(),
     PrismaModule,
+    CryptoModule,
     AuditModule,
     SettingsModule,
     UsersModule,

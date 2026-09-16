@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Splash screen. A flat colour with the mark centred on it, rather than one
+  large bitmap per screen size: a layer-list never stretches, so the same file
+  is correct on a phone in portrait and on a tablet in landscape.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splash_background" />
+    <item>
+        <bitmap android:src="@drawable/splash_mark" android:gravity="center" />
+    </item>
+</layer-list>

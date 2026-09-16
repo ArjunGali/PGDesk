@@ -1,0 +1,17 @@
+<!--
+  Adaptive-icon foreground.
+
+  Android masks adaptive icons to whatever shape the launcher wants, and only
+  the centre 66% of the canvas is guaranteed to survive. The glyph is sized to
+  sit well inside that safe circle; the background is supplied separately as a
+  flat colour so the two layers can be animated independently by the launcher.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <g transform="translate(512 512) scale(17) translate(-12 -12)"
+     fill="none" stroke="#C6A15B" stroke-width="1.5"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 21V4a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v17"/>
+    <path d="M15 9h4a1 1 0 0 1 1 1v11"/>
+    <path d="M3 21h18M8 7h3M8 11h3M8 15h3"/>
+  </g>
+</svg>

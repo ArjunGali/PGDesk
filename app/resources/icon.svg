@@ -1,0 +1,20 @@
+<!--
+  App icon source.
+
+  The same architectural mark the app uses in its header: a brass building
+  glyph on charcoal. Kept as a square with generous padding so Android's
+  adaptive-icon mask cannot clip it on any launcher.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#0E0F10"/>
+  <rect x="112" y="112" width="800" height="800" rx="176" fill="#16191A"/>
+  <rect x="112.5" y="112.5" width="799" height="799" rx="175.5" fill="none"
+        stroke="#C6A15B" stroke-opacity="0.32" stroke-width="5"/>
+  <g transform="translate(512 512) scale(20) translate(-12 -12)"
+     fill="none" stroke="#C6A15B" stroke-width="1.5"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 21V4a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v17"/>
+    <path d="M15 9h4a1 1 0 0 1 1 1v11"/>
+    <path d="M3 21h18M8 7h3M8 11h3M8 15h3"/>
+  </g>
+</svg>

@@ -2,7 +2,7 @@
   "name": "app",
   "version": "1.0.0",
   "private": true,
-  "description": "PG Management — Android app (React + Capacitor)",
+  "description": "PG Management \u2014 Android app (React + Capacitor)",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "cap:add:android": "cap add android",
-    "android:sync": "npm run build && cap sync android",
+    "android:configure": "node scripts/apply-android-config.mjs",
+    "android:sync": "npm run build && cap sync android && npm run android:configure",
     "android:open": "cap open android",
     "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug",
     "android:release": "npm run android:sync && cd android && ./gradlew assembleRelease"

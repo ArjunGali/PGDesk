@@ -142,7 +142,7 @@ export function PastTenantsScreen() {
 
               {!tenant.erasedAt && (
                 <div className="flex flex-wrap gap-2 mt-3.5">
-                  {can('export.run') && (
+                  {can('export.run') && can('tenant.view_sensitive') && (
                     <>
                       <button
                         type="button"

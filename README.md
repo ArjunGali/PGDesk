@@ -8,8 +8,13 @@ One APK adapts to phones and tablets, portrait and landscape. Dark is the
 primary theme, with a designed light theme alongside it.
 
 ```
-Android APK  →  React + TypeScript (Capacitor)  →  HTTPS REST  →  NestJS  →  PostgreSQL
+PHONE / TABLET  →  LOCAL NETWORK  →  BACKEND  →  POSTGRESQL
+   (one APK)         (your Wi-Fi)     (NestJS)    (Docker or local)
 ```
+
+Everything runs on hardware you own. No cloud account, no Firebase, no push
+service, nothing to pay for monthly. See
+[`docs/ANDROID.md`](docs/ANDROID.md) for the full topology.
 
 ---
 
@@ -60,20 +65,34 @@ Or use an existing PostgreSQL 14+ instance and point `DATABASE_URL` at it.
 
 ```bash
 cd backend
-cp .env.example .env          # set JWT secrets before exposing this anywhere
+cp .env.example .env
 npm install
 npx prisma migrate deploy     # or: npx prisma migrate dev
 npm run db:seed               # initial branches, rooms, prices and settings
 npm run start:dev
 ```
 
+`.env.example` ships with the secrets blank on purpose — there is no working
+default for any of them. Fill these in before the first run:
+
+```bash
+openssl rand -hex 32        # JWT_SECRET
+openssl rand -base64 32     # AADHAAR_ENCRYPTION_KEY
+```
+
+`AADHAAR_ENCRYPTION_KEY` encrypts tenant Aadhaar numbers at rest. **Back it up
+separately from the database** — losing it means those numbers are
+unrecoverable. [`docs/SECURITY.md`](docs/SECURITY.md) explains the scheme,
+rotation, and what happens if it is missing.
+
 The API listens on `http://0.0.0.0:3000/api`. `GET /api/health` reports
 database connectivity.
 
 The seed creates four profiles — Owner, Admin, Manager and Staff. Only the
-Owner is given a PIN, from `SEED_OWNER_PIN`; the others choose their own the
-first time they tap their name. Set that variable before seeding, or change the
-PIN from Settings straight afterwards.
+Owner is given a PIN; the others choose their own the first time they tap their
+name. Set `SEED_OWNER_PIN` before seeding, or leave it blank and the seed
+generates one and prints it once — there is deliberately no default PIN written
+into the code for someone to look up.
 
 ### 3. App (development)
 
@@ -87,18 +106,24 @@ npm run dev                   # http://localhost:5173
 
 ```bash
 cd app
-npm run build
+npm install
 npx cap add android           # first time only
-npm run android:sync
-npm run android:build         # android/app/build/outputs/apk/debug/
+npm run android:build         # debug APK
 ```
 
+The APK lands in `app/android/app/build/outputs/apk/debug/app-debug.apk`.
 Requires Android Studio or a JDK 17 + Android SDK installation.
 
-**Talking to a server on your LAN.** Android blocks plaintext HTTP by default.
-For a self-hosted backend without TLS, allow your server's host explicitly —
-see [`docs/ANDROID.md`](docs/ANDROID.md). The app's own server address is set
-from the sign-in screen (the icon top right), so one APK works against any
+`app/android/` is generated and git-ignored. The icon, splash, permissions and
+network policy live in `app/android-template/` and are copied in automatically
+by `npm run android:configure`, which `android:sync` runs for you — so edit the
+template, never `app/android/`.
+
+**Talking to a server on your LAN.** Android blocks plaintext HTTP by default,
+so your server's address has to be listed in
+`app/android-template/app/src/main/res/xml/network_security_config.xml` — see
+[`docs/ANDROID.md`](docs/ANDROID.md). The app's own server address is set from
+the profile screen (the icon top right), so one APK works against any
 deployment.
 
 ---
@@ -159,5 +184,9 @@ with `TEST_DATABASE_URL` if you prefer a separate database.
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the rules the code enforces
   and why, including the E.B. algorithm and the money model.
-- [`docs/ANDROID.md`](docs/ANDROID.md) — building the APK and connecting to a
-  self-hosted server.
+- [`docs/ANDROID.md`](docs/ANDROID.md) — the phone → LAN → backend → database
+  topology, building the APK, permissions and connecting to a self-hosted
+  server.
+- [`docs/SECURITY.md`](docs/SECURITY.md) — Aadhaar encryption at rest, key
+  rotation, PIN handling, server-side authorisation, and what is deliberately
+  *not* covered.

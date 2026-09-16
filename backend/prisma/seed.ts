@@ -11,6 +11,7 @@
  * already exists. It will never overwrite a value the owner has since changed.
  */
 import { AcType, PrismaClient, PricingScope, SettingType } from '@prisma/client';
+import { randomInt } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import {
   DEFAULT_ROLES,
@@ -135,7 +136,11 @@ async function seedPermissionsAndRoles(): Promise<Record<string, string>> {
  */
 async function seedProfiles(roleIds: Record<string, string>): Promise<void> {
   const ownerUsername = (process.env.SEED_OWNER_USERNAME ?? 'owner').toLowerCase();
-  const ownerPin = process.env.SEED_OWNER_PIN ?? '4071';
+  const configuredPin = process.env.SEED_OWNER_PIN?.trim();
+  // A default written here would be the Owner PIN of every installation that
+  // never set the variable — published, in this file. So when it is not set we
+  // generate one and print it, which is safe and still leaves setup working.
+  const ownerPin = configuredPin && configuredPin !== '' ? configuredPin : randomPin();
 
   // Hold the seed to the same rule the app enforces, so a configured PIN can
   // never be one the app itself would refuse to accept.
@@ -191,7 +196,16 @@ async function seedProfiles(roleIds: Record<string, string>): Promise<void> {
     `Profiles: ${created} created (${profiles.map((p) => p.fullName).join(', ')})`,
   );
   if (created > 0) {
-    console.log(`  Owner PIN: ${ownerPin}${process.env.SEED_OWNER_PIN ? '' : ' (default — change it after first use)'}`);
+    if (configuredPin) {
+      console.log('  Owner PIN: the value of SEED_OWNER_PIN');
+    } else {
+      console.log('');
+      console.log(`  Owner PIN: ${ownerPin}`);
+      console.log('  Generated because SEED_OWNER_PIN was not set. Write it down —');
+      console.log('  it is not stored anywhere in readable form and is not shown again.');
+      console.log('  Change it from Settings once you are in.');
+      console.log('');
+    }
     console.log('  Admin, Manager and Staff have no PIN yet; each sets their own on first use.');
   }
 }
@@ -453,6 +467,23 @@ async function createSharingPrices(
         reason: 'Initial pricing from the system specification',
       },
     });
+  }
+}
+
+/**
+ * A PIN nobody has seen before, for when the environment does not supply one.
+ * Drawn from the OS random source and re-drawn until it passes the same rules
+ * the app applies, so the generated PIN is never one a person could not set.
+ */
+function randomPin(): string {
+  for (;;) {
+    const pin = String(randomInt(100_000, 1_000_000));
+    try {
+      assertSeedPin(pin);
+      return pin;
+    } catch {
+      // Ran a sequence or repeated a digit; draw again.
+    }
   }
 }
 

@@ -25,8 +25,18 @@ export class RetentionController {
     return this.retention.listVacated();
   }
 
+  /**
+   * The archive carries the tenant's Aadhaar in full — it is the copy that has
+   * to survive the erasure — so it needs the same permission as seeing the
+   * number on screen. Without that, a role the UI shows a masked number to
+   * could read the real one out of the spreadsheet.
+   */
   @Get('tenants/:id/export')
-  @RequirePermissions(PERMISSIONS.TENANT_VIEW, PERMISSIONS.EXPORT_RUN)
+  @RequirePermissions(
+    PERMISSIONS.TENANT_VIEW,
+    PERMISSIONS.TENANT_VIEW_SENSITIVE,
+    PERMISSIONS.EXPORT_RUN,
+  )
   async export(
     @Param('id') id: string,
     @Query('format') format: string | undefined,

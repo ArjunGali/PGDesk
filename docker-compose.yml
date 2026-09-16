@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-pgm}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pgm_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env — there is deliberately no default}
       POSTGRES_DB: ${POSTGRES_DB:-pg_management}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -28,10 +28,12 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-pgm}:${POSTGRES_PASSWORD:-pgm_password}@postgres:5432/${POSTGRES_DB:-pg_management}?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pgm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-pg_management}?schema=public
       PORT: 3000
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-too-in-production}
+      # No defaults for secrets: a stack that starts without them would be
+      # running on a key published in this repository.
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env — generate with: openssl rand -hex 32}
+      AADHAAR_ENCRYPTION_KEY: ${AADHAAR_ENCRYPTION_KEY:?Set AADHAAR_ENCRYPTION_KEY in .env — generate with: openssl rand -base64 32}
       STORAGE_ROOT: /data/storage
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,capacitor://localhost,http://localhost,https://localhost}
     ports:

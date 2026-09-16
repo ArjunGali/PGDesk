@@ -336,9 +336,15 @@ model Tenant {
   permanentAddress String?
   officeAddress    String?
   officeName       String?
-  /// Searchable, but masked to the last four digits unless the viewer holds
-  /// the permission to see it in full. Cleared by the erasure workflow.
-  aadhaarNumber    String?
+  /// Aadhaar, encrypted at rest (AES-256-GCM). Never queried directly and
+  /// never returned raw by the API — see FieldEncryptionService.
+  aadhaarCiphertext String?
+  /// Keyed HMAC of the digits, so an exact number can be found without the
+  /// database holding anything readable.
+  aadhaarIndex      String?
+  /// Last four digits only, kept in the clear so the masked form can be shown
+  /// without decrypting. Four digits identify nobody on their own.
+  aadhaarLast4      String?
   photoDocumentId  String?
   notes            String?
   createdAt        DateTime @default(now())
@@ -358,7 +364,7 @@ model Tenant {
 
   @@index([fullName])
   @@index([mobile])
-  @@index([aadhaarNumber])
+  @@index([aadhaarIndex])
 }
 
 /// Proof that a tenant's records were exported before anything was erased.

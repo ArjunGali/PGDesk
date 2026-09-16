@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, StayStatus } from '@prisma/client';
+import { FieldEncryptionService } from '../../common/crypto/field-encryption';
 import { Db, PrismaService } from '../../common/prisma/prisma.service';
 import { dayStart } from '../../common/utils/dates';
 import { SETTING_KEYS } from '../settings/setting-keys';
@@ -39,7 +40,54 @@ export class TenantsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly settings: SettingsService,
+    private readonly encryption: FieldEncryptionService,
   ) {}
+
+  /**
+   * Splits an Aadhaar number into the three columns that replace it: the
+   * ciphertext, the search index, and the last four digits for display.
+   *
+   * Passing an empty string clears all three, which is what the erasure
+   * workflow and a user blanking the field both need.
+   */
+  private aadhaarColumns(value: string | null | undefined): {
+    aadhaarCiphertext: string | null;
+    aadhaarIndex: string | null;
+    aadhaarLast4: string | null;
+  } {
+    const digits = (value ?? '').replace(/\D/g, '');
+    if (digits === '') {
+      return { aadhaarCiphertext: null, aadhaarIndex: null, aadhaarLast4: null };
+    }
+    return {
+      aadhaarCiphertext: this.encryption.encrypt(digits),
+      aadhaarIndex: this.encryption.blindIndex(digits),
+      aadhaarLast4: digits.slice(-4),
+    };
+  }
+
+  /**
+   * The form of an Aadhaar number a caller is allowed to see.
+   *
+   * The masked form is built from the stored last four digits, so an ordinary
+   * read never decrypts anything. Only an explicitly authorised caller causes
+   * a decryption, and a decryption failure degrades to the mask rather than
+   * failing the whole tenant record.
+   */
+  private presentAadhaar(
+    tenant: { aadhaarCiphertext: string | null; aadhaarLast4: string | null },
+    canSeeSensitive: boolean,
+  ): string | null {
+    if (!tenant.aadhaarLast4) return null;
+    if (!canSeeSensitive) return `•••• •••• ${tenant.aadhaarLast4}`;
+
+    try {
+      return this.encryption.decrypt(tenant.aadhaarCiphertext);
+    } catch {
+      // Key missing or rotated: show what we can rather than 500 the screen.
+      return `•••• •••• ${tenant.aadhaarLast4}`;
+    }
+  }
 
   // --- Tenants -----------------------------------------------------------
 
@@ -233,10 +281,19 @@ export class TenantsService {
         (a) => a.startDate <= today && (!a.endDate || a.endDate >= today),
       ) ?? null;
 
+    // Strip the stored columns from the response entirely: the ciphertext and
+    // the search index must never leave the server.
+    const {
+      aadhaarCiphertext: _ciphertext,
+      aadhaarIndex: _index,
+      aadhaarLast4: _last4,
+      ...safeTenant
+    } = tenant;
+
     return {
-      ...tenant,
+      ...safeTenant,
       // Masked unless the viewer is permitted to see it in full.
-      aadhaarNumber: maskAadhaar(tenant.aadhaarNumber, options.canSeeSensitive),
+      aadhaarNumber: this.presentAadhaar(tenant, options.canSeeSensitive === true),
       completeness,
       currentStayId: currentStay?.id ?? null,
       currentLocation: currentAssignment
@@ -257,20 +314,29 @@ export class TenantsService {
   }
 
   async create(dto: CreateTenantDto) {
-    const { customFields, ...rest } = dto;
+    const { customFields, aadhaarNumber, ...rest } = dto;
     return this.prisma.runInTransaction(async (tx) => {
-      const tenant = await tx.tenant.create({ data: rest });
+      const tenant = await tx.tenant.create({
+        data: { ...rest, ...this.aadhaarColumns(aadhaarNumber) },
+      });
       if (customFields) await this.writeCustomFields(tx, tenant.id, customFields);
       return tenant;
     });
   }
 
   async update(id: string, dto: UpdateTenantDto) {
-    const { customFields, ...rest } = dto;
+    const { customFields, aadhaarNumber, ...rest } = dto;
     return this.prisma.runInTransaction(async (tx) => {
       const tenant = await tx.tenant.update({
         where: { id },
-        data: rest,
+        data: {
+          ...rest,
+          // Only touch the Aadhaar columns when the field was actually sent,
+          // so a partial update cannot wipe it by omission.
+          ...(aadhaarNumber === undefined
+            ? {}
+            : this.aadhaarColumns(aadhaarNumber)),
+        },
       });
       if (customFields) await this.writeCustomFields(tx, id, customFields);
       return tenant;
@@ -431,6 +497,19 @@ export class TenantsService {
     const digits = q.replace(/\D/g, '');
     const today = dayStart(new Date());
 
+    // Built before the query so a missing encryption key degrades search to
+    // name and mobile rather than failing it.
+    const aadhaarPredicates: Prisma.TenantWhereInput[] = [];
+    if (digits.length >= 4) {
+      if (this.encryption.isConfigured) {
+        const index = this.encryption.blindIndex(digits);
+        if (index) aadhaarPredicates.push({ aadhaarIndex: index });
+      }
+      if (digits.length === 4) {
+        aadhaarPredicates.push({ aadhaarLast4: digits });
+      }
+    }
+
     const [tenants, rooms, branches] = await Promise.all([
       this.prisma.tenant.findMany({
         where: {
@@ -439,9 +518,11 @@ export class TenantsService {
             { fullName: { contains: q, mode: 'insensitive' } },
             { mobile: { contains: q } },
             { officeName: { contains: q, mode: 'insensitive' } },
-            // Only treat it as an Aadhaar lookup once enough digits are given
-            // to be a deliberate search rather than an accidental match.
-            ...(digits.length >= 4 ? [{ aadhaarNumber: { contains: digits } }] : []),
+            // Aadhaar is encrypted, so it cannot be matched with `contains`.
+            // A full number is found through the keyed blind index; four or
+            // more digits fall back to the stored last four, which is the way
+            // staff usually read a number off a document.
+            ...aadhaarPredicates,
           ],
         },
         take: 15,
@@ -449,7 +530,8 @@ export class TenantsService {
           id: true,
           fullName: true,
           mobile: true,
-          aadhaarNumber: true,
+          aadhaarCiphertext: true,
+          aadhaarLast4: true,
           stays: {
             where: { status: { in: [StayStatus.ACTIVE, StayStatus.NOTICE_GIVEN] } },
             take: 1,
@@ -521,7 +603,10 @@ export class TenantsService {
           id: tenant.id,
           fullName: tenant.fullName,
           mobile: tenant.mobile,
-          aadhaarNumber: maskAadhaar(tenant.aadhaarNumber, options.canSeeSensitive),
+          aadhaarNumber: this.presentAadhaar(
+            tenant,
+            options.canSeeSensitive === true,
+          ),
           branchName: assignment?.bed.room.floor.branch.name ?? null,
           floorName: assignment?.bed.room.floor.name ?? null,
           roomName: assignment?.bed.room.name ?? null,
@@ -541,20 +626,4 @@ export class TenantsService {
       branches,
     };
   }
-}
-
-/**
- * Aadhaar is shown as its last four digits unless the viewer is permitted to
- * see it in full. A number on a search result is enough for staff to confirm
- * they have the right person without putting it on every screen.
- */
-export function maskAadhaar(
-  value: string | null,
-  canSeeSensitive = false,
-): string | null {
-  if (!value) return null;
-  if (canSeeSensitive) return value;
-  const digits = value.replace(/\D/g, '');
-  if (digits.length <= 4) return '••••';
-  return `•••• •••• ${digits.slice(-4)}`;
 }

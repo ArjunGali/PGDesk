@@ -224,7 +224,9 @@ describe('retention and access (integration)', () => {
         fullName: `Erased tenant ${tenantId.slice(0, 8)}`,
         mobile: null,
         permanentAddress: null,
-        aadhaarNumber: null,
+        aadhaarCiphertext: null,
+        aadhaarIndex: null,
+        aadhaarLast4: null,
         notes: null,
         personalDataErasedAt: new Date(),
         erasedById: ACTOR,
@@ -263,7 +265,9 @@ describe('retention and access (integration)', () => {
         fullName: `Erased tenant ${tenantId.slice(0, 8)}`,
         mobile: null,
         permanentAddress: null,
-        aadhaarNumber: null,
+        aadhaarCiphertext: null,
+        aadhaarIndex: null,
+        aadhaarLast4: null,
         notes: null,
         personalDataErasedAt: new Date(),
       },
@@ -271,7 +275,9 @@ describe('retention and access (integration)', () => {
 
     const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId } });
     expect(tenant.mobile).toBeNull();
-    expect(tenant.aadhaarNumber).toBeNull();
+    expect(tenant.aadhaarCiphertext).toBeNull();
+    expect(tenant.aadhaarIndex).toBeNull();
+    expect(tenant.aadhaarLast4).toBeNull();
     expect(tenant.permanentAddress).toBeNull();
     expect(tenant.notes).toBeNull();
     expect(tenant.personalDataErasedAt).not.toBeNull();

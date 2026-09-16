@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The same charcoal the app paints on its first frame, so the handover
+         from splash to app is invisible. -->
+    <color name="splash_background">#0E0F10</color>
+</resources>

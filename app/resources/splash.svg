@@ -1,0 +1,18 @@
+<!--
+  Splash source. Deliberately almost empty: a centred mark on the app's own
+  background, so the launch feels like the app opening rather than a poster.
+  Square and oversized so it survives any crop on any aspect ratio.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="2732" height="2732" viewBox="0 0 2732 2732">
+  <rect width="2732" height="2732" fill="#0E0F10"/>
+  <rect x="1186" y="1186" width="360" height="360" rx="80" fill="#C6A15B" fill-opacity="0.10"/>
+  <rect x="1188" y="1188" width="356" height="356" rx="78" fill="none"
+        stroke="#C6A15B" stroke-opacity="0.28" stroke-width="4"/>
+  <g transform="translate(1366 1366) scale(9) translate(-12 -12)"
+     fill="none" stroke="#C6A15B" stroke-width="1.5"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 21V4a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v17"/>
+    <path d="M15 9h4a1 1 0 0 1 1 1v11"/>
+    <path d="M3 21h18M8 7h3M8 11h3M8 15h3"/>
+  </g>
+</svg>
